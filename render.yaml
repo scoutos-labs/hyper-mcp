@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: hyper-mcp
+    runtime: node
+    plan: starter
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: 22
+      - key: HYPER_MCP_PGLITE_DIR
+        value: /var/data/pgdata
+      - key: HYPER_MCP_READONLY
+        value: "false"
+      - key: HYPER_MCP_ALLOW_DANGEROUS
+        value: "false"
+    disk:
+      name: hyper-mcp-pglite
+      mountPath: /var/data
+      sizeGB: 1

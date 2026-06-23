@@ -3,6 +3,7 @@ import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { loadConfig } from "./config.js";
 import { createServer } from "./server.js";
+import { landingPage } from "./landing.js";
 
 const port = Number(process.env.PORT || 3000);
 const config = loadConfig();
@@ -10,6 +11,10 @@ const server = createServer(config);
 const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
 
 const app = createMcpExpressApp();
+
+app.get("/", (_req: any, res: any) => {
+  res.status(200).type("html").send(landingPage());
+});
 
 app.get("/health", (_req: any, res: any) => {
   res.status(200).json({

@@ -1,10 +1,10 @@
 import type { Config } from "./config.js";
 import { PortError } from "./errors.js";
-import type { PgliteBackend } from "./pglite-backend.js";
+import type { Ports } from "./ports/types.js";
 import { validateAdminJwt, parsePorts, extractBearer } from "./auth.js";
 import { logger, startTimer } from "./logger.js";
 
-export function createAuthRoutes(config: Config, backend: PgliteBackend) {
+export function createAuthRoutes(config: Config, backend: Ports) {
   return {
     register: async (req: any, res: any) => {
       const timer = startTimer("auth.register");

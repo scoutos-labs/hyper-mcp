@@ -33,6 +33,8 @@ services:
         sync: false
       - key: HYPER_MCP_JWKS_CACHE_SECONDS
         value: "300"
+      - key: HYPER_MCP_BACKEND
+        value: pglite
     disk:
       name: hyper-mcp-pglite
       mountPath: /var/data

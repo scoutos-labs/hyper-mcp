@@ -212,6 +212,9 @@ HYPER_MCP_PGLITE_DIR=.hyper-mcp/pgdata
 HYPER_MCP_READONLY=false
 HYPER_MCP_ALLOW_DANGEROUS=false
 
+# Backend adapter
+HYPER_MCP_BACKEND=pglite    # pglite | scoutos (future) | memory (future)
+
 # Auth
 HYPER_MCP_AUTH_REQUIRED=true
 HYPER_MCP_ADMIN_PUBLIC_JWK=...       # or HYPER_MCP_ADMIN_JWKS_URL=...

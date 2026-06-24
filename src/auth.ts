@@ -1,7 +1,7 @@
 import { jwtVerify, createLocalJWKSet, createRemoteJWKSet, importJWK, type JWK } from "jose";
 import type { Config, AdminTrustRoot } from "./config.js";
 import { PortError } from "./errors.js";
-import type { PgliteBackend } from "./pglite-backend.js";
+import type { Ports } from "./ports/types.js";
 
 export interface AuthContext {
   accountId: string;
@@ -100,7 +100,7 @@ export async function validateAdminJwt(token: string, config: Config): Promise<A
 
 // ---- Account JWT ----
 
-export async function validateAccountJwt(token: string, config: Config, backend: PgliteBackend): Promise<AuthContext> {
+export async function validateAccountJwt(token: string, config: Config, backend: Ports): Promise<AuthContext> {
   try {
     // First decode without verification to get issuer + kid
     const parts = token.split(".");

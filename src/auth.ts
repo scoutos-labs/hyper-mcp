@@ -137,7 +137,8 @@ export async function validateAccountJwt(token: string, config: Config, backend:
       audience: account.audience,
     });
 
-    const scopes = extractScopes(payload);
+    // Scopes come from the account record (DB), not the JWT — the server is the authority.
+    void payload;
 
     return {
       accountId: account.accountId,

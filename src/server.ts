@@ -5,6 +5,7 @@ import { toToolError, PortError } from "./errors.js";
 import { logger, startTimer, recordToolCall } from "./logger.js";
 import type { PgliteBackend } from "./pglite-backend.js";
 import { hasScope, type AuthContext } from "./auth.js";
+import { getAuthContext } from "./auth-context.js";
 
 const AnyObj = z.record(z.string(), z.any());
 const JsonValue = z.any();
@@ -52,9 +53,7 @@ export function createServer(config: Config, getBackend: BackendGetter) {
         let accountId: string | undefined;
         // Scope enforcement when auth is required
         if (config.authRequired && config.admin) {
-          const authCtx = (extra as any)?.sessionInfo?.__auth as AuthContext | undefined
-            ?? ((extra as any)?._meta as any)?.__auth as AuthContext | undefined
-            ?? ((extra as any)?.params?.__auth) as AuthContext | undefined;
+          const authCtx = getAuthContext();
           if (!authCtx) {
             throw new PortError("AUTH_REQUIRED", "Authentication required", 401);
           }

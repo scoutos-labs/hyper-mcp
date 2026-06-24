@@ -7,6 +7,7 @@ import { landingPage } from "./landing.js";
 import { createAuthRoutes } from "./auth-routes.js";
 import { validateAccountJwt, extractBearer } from "./auth.js";
 import { PortError } from "./errors.js";
+import { runWithAuth } from "./auth-context.js";
 import { logger, startTimer, requestLogger, getMetrics, recordToolCall, recordAuthFailure } from "./logger.js";
 import type { PgliteBackend } from "./pglite-backend.js";
 
@@ -105,7 +106,7 @@ app.post("/mcp", async (req: any, res: any) => {
   }
 
   try {
-    await transport.handleRequest(req, res, req.body);
+    await runWithAuth(req.__auth, () => transport.handleRequest(req, res, req.body));
     timer.end({ accountId: req.__auth?.accountId });
   } catch (error) {
     timer.end({ error: true });
@@ -168,5 +169,5 @@ process.on("uncaughtException", (error) => {
 });
 
 process.on("unhandledRejection", (reason) => {
-  logger.error("Unhandled rejection", { reason: String(reason) });
+  logger.error("Unhandled rejection", { reason: reason instanceof Error ? reason.message : String(reason), stack: reason instanceof Error ? reason.stack : undefined });
 });

@@ -126,6 +126,11 @@ export function requestLogger() {
     const url = req.url;
     const requestId = req.headers["x-request-id"] || crypto.randomUUID();
 
+    // Return request ID so clients can correlate
+    if (!res.headersSent) {
+      res.setHeader("X-Request-Id", requestId);
+    }
+
     res.on("finish", () => {
       const durationMs = Math.round(performance.now() - start);
       const level: LogLevel = res.statusCode >= 500 ? "error" : res.statusCode >= 400 ? "warn" : "info";

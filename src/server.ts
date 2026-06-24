@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import * as z from "zod/v4";
 import type { Config } from "./config.js";
 import { toToolError, PortError } from "./errors.js";
+import { logger, startTimer, recordToolCall } from "./logger.js";
 import type { PgliteBackend } from "./pglite-backend.js";
 import { hasScope, type AuthContext } from "./auth.js";
 
@@ -44,6 +45,7 @@ export function createServer(config: Config, getBackend: BackendGetter) {
       inputSchema,
       annotations: { readOnlyHint: readOnly, destructiveHint: !readOnly }
     }, async (args: any, extra: any) => {
+      const timer = startTimer("tool.call", { tool: name, scope: requiredScope });
       try {
         const backend = await getBackend();
 
@@ -62,9 +64,20 @@ export function createServer(config: Config, getBackend: BackendGetter) {
           accountId = authCtx.accountId;
         }
 
-        return jsonResult(await handler(args, backend, accountId));
+        const result = await handler(args, backend, accountId);
+        timer.end({ accountId, success: true });
+        recordToolCall(name, true);
+        return jsonResult(result);
       }
       catch (e) {
+        const err = e as Error;
+        timer.end({ accountId: undefined, success: false });
+        recordToolCall(name, false);
+        if (err instanceof PortError) {
+          logger.warn("tool error", { tool: name, code: err.code, status: err.status, message: err.message });
+        } else {
+          logger.error("tool unexpected error", { tool: name, error: err.message, stack: err.stack });
+        }
         return toToolError(e);
       }
     });

@@ -2,10 +2,12 @@ import type { Config } from "./config.js";
 import { PortError } from "./errors.js";
 import type { PgliteBackend } from "./pglite-backend.js";
 import { validateAdminJwt, parsePorts, extractBearer } from "./auth.js";
+import { logger, startTimer } from "./logger.js";
 
 export function createAuthRoutes(config: Config, backend: PgliteBackend) {
   return {
     register: async (req: any, res: any) => {
+      const timer = startTimer("auth.register");
       if (!config.admin) {
         return res.status(503).json({ error: "admin_not_configured", message: "Admin trust root not configured" });
       }
@@ -46,6 +48,7 @@ export function createAuthRoutes(config: Config, backend: PgliteBackend) {
       }
 
       try {
+        logger.info("registering account", { accountId, issuer });
         await backend.accountCreate(accountId, name || accountId, issuer, audience, scopes);
 
         if (publicJwk) {
@@ -58,6 +61,8 @@ export function createAuthRoutes(config: Config, backend: PgliteBackend) {
         }
 
         await backend.auditLog("admin", accountId, "register", "success", { scopes });
+        timer.end({ accountId, scopes });
+        logger.info("account registered", { accountId, scopes });
 
         return res.status(201).json({
           ok: true,
@@ -70,11 +75,14 @@ export function createAuthRoutes(config: Config, backend: PgliteBackend) {
       } catch (e) {
         const err = e as PortError;
         await backend.auditLog("admin", accountId, "register", "failure", { error: err.message });
+        timer.end({ accountId, error: true });
+        logger.error("account registration failed", { accountId, error: err.message });
         return res.status(err.status || 500).json({ error: err.code, message: err.message });
       }
     },
 
     unregister: async (req: any, res: any) => {
+      const timer = startTimer("auth.unregister");
       if (!config.admin) {
         return res.status(503).json({ error: "admin_not_configured", message: "Admin trust root not configured" });
       }
@@ -105,6 +113,8 @@ export function createAuthRoutes(config: Config, backend: PgliteBackend) {
 
       const result = await backend.accountDisable(accountId);
       await backend.auditLog("admin", accountId, "unregister", "success");
+      timer.end({ accountId });
+      logger.info("account unregistered", { accountId });
 
       return res.status(200).json({
         ok: result.ok,

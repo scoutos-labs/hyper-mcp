@@ -92,6 +92,41 @@ export class PgliteBackend {
         updated_at timestamptz NOT NULL DEFAULT now(),
         PRIMARY KEY (index_name, id)
       );
+
+      CREATE TABLE IF NOT EXISTS accounts (
+        account_id text PRIMARY KEY,
+        name text,
+        issuer text NOT NULL,
+        audience text NOT NULL,
+        status text NOT NULL DEFAULT 'active',
+        scopes jsonb NOT NULL DEFAULT '[]',
+        created_at timestamptz NOT NULL DEFAULT now(),
+        updated_at timestamptz NOT NULL DEFAULT now()
+      );
+      CREATE TABLE IF NOT EXISTS account_keys (
+        account_id text NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,
+        kid text NOT NULL,
+        public_jwk jsonb NOT NULL,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        PRIMARY KEY (account_id, kid)
+      );
+      CREATE TABLE IF NOT EXISTS account_jwks (
+        account_id text NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,
+        jwks_url text NOT NULL,
+        cached_jwks jsonb,
+        cache_expires_at timestamptz,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        PRIMARY KEY (account_id)
+      );
+      CREATE TABLE IF NOT EXISTS account_audit_log (
+        id text PRIMARY KEY,
+        actor text,
+        account_id text,
+        action text NOT NULL,
+        outcome text NOT NULL,
+        metadata jsonb,
+        created_at timestamptz NOT NULL DEFAULT now()
+      );
     `);
   }
 
@@ -249,5 +284,58 @@ export class PgliteBackend {
     return { ok: true, index, took: 0, total, maxScore: null, hits: page.map(d => ({ id: d.id, score: null, source: d.document })) };
   }
   async searchCount(index: string) { const h = await this.searchHealth(index); return { ok: true, index, count: h.documentCount }; }
+
+  // Auth
+  async accountCreate(accountId: string, name: string, issuer: string, audience: string, scopes: string[]) {
+    try {
+      await this.q(`INSERT INTO accounts(account_id,name,issuer,audience,status,scopes) VALUES($1,$2,$3,$4,'active',$5::jsonb) ON CONFLICT(account_id) DO UPDATE SET name=excluded.name, issuer=excluded.issuer, audience=excluded.audience, scopes=excluded.scopes, status='active', updated_at=now()`, [accountId, name, issuer, audience, JSON.stringify(scopes)]);
+    } catch (e) {
+      throw new PortError("ACCOUNT_CREATE_FAILED", `Failed to create account: ${(e as Error).message}`, 400);
+    }
+    return { ok: true, accountId, status: "active" as const, scopes };
+  }
+  async accountGet(accountId: string) {
+    const r = await this.q<any>(`SELECT * FROM accounts WHERE account_id=$1`, [accountId]);
+    if (!r.rows[0]) return null;
+    const row = r.rows[0];
+    return { accountId: row.account_id, name: row.name, issuer: row.issuer, audience: row.audience, status: row.status, scopes: Array.isArray(row.scopes) ? row.scopes : JSON.parse(row.scopes || "[]") };
+  }
+  async accountGetByIssuer(issuer: string) {
+    const r = await this.q<any>(`SELECT * FROM accounts WHERE issuer=$1 AND status='active'`, [issuer]);
+    if (!r.rows[0]) return null;
+    const row = r.rows[0];
+    return { accountId: row.account_id, name: row.name, issuer: row.issuer, audience: row.audience, status: row.status, scopes: Array.isArray(row.scopes) ? row.scopes : JSON.parse(row.scopes || "[]") };
+  }
+  async accountDisable(accountId: string) {
+    const r = await this.q<{ account_id: string }>(`UPDATE accounts SET status='disabled', updated_at=now() WHERE account_id=$1 RETURNING account_id`, [accountId]);
+    return { ok: r.rows.length > 0, accountId };
+  }
+  async accountAddKey(accountId: string, kid: string, publicJwk: object) {
+    await this.q(`INSERT INTO account_keys(account_id,kid,public_jwk) VALUES($1,$2,$3::jsonb) ON CONFLICT(account_id,kid) DO UPDATE SET public_jwk=excluded.public_jwk`, [accountId, kid, JSON.stringify(publicJwk)]);
+    return { ok: true, accountId, kid };
+  }
+  async accountGetKeys(accountId: string) {
+    const r = await this.q<any>(`SELECT kid, public_jwk AS "publicJwk" FROM account_keys WHERE account_id=$1`, [accountId]);
+    return r.rows;
+  }
+  async accountAddJwksUrl(accountId: string, jwksUrl: string) {
+    await this.q(`INSERT INTO account_jwks(account_id,jwks_url) VALUES($1,$2) ON CONFLICT(account_id) DO UPDATE SET jwks_url=excluded.jwks_url`, [accountId, jwksUrl]);
+    return { ok: true, accountId, jwksUrl };
+  }
+  async accountGetJwksUrl(accountId: string) {
+    const r = await this.q<any>(`SELECT jwks_url AS "jwksUrl", cached_jwks AS "cachedJwks", cache_expires_at AS "cacheExpiresAt" FROM account_jwks WHERE account_id=$1`, [accountId]);
+    return r.rows[0] || null;
+  }
+  async accountSetCachedJwks(accountId: string, jwks: object, expiresAt: Date) {
+    await this.q(`UPDATE account_jwks SET cached_jwks=$2::jsonb, cache_expires_at=$3 WHERE account_id=$1`, [accountId, JSON.stringify(jwks), expiresAt]);
+  }
+  async auditLogQuery(accountId: string) {
+    const r = await this.q<any>(`SELECT * FROM account_audit_log WHERE account_id=$1 ORDER BY created_at DESC`, [accountId]);
+    return r.rows;
+  }
+  async auditLog(actor: string | null, accountId: string | null, action: string, outcome: string, metadata?: Record<string, unknown>) {
+    await this.q(`INSERT INTO account_audit_log(id,actor,account_id,action,outcome,metadata) VALUES($1,$2,$3,$4,$5,$6::jsonb)`, [randomUUID(), actor, accountId, action, outcome, JSON.stringify(metadata ?? null)]);
+  }
+
   async close() { await this.ready; await this.db.close(); }
 }

@@ -2,10 +2,12 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { loadConfig } from "./config.js";
 import { createServer } from "./server.js";
+import { PgliteBackend } from "./pglite-backend.js";
 
 async function main() {
   const config = loadConfig();
-  const server = createServer(config);
+  const backend = new PgliteBackend(config.pgDir);
+  const server = createServer(config, () => Promise.resolve(backend));
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }

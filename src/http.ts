@@ -8,7 +8,7 @@ import { createAuthRoutes } from "./auth-routes.js";
 import { validateAccountJwt, extractBearer } from "./auth.js";
 import { PortError } from "./errors.js";
 import { runWithAuth } from "./auth-context.js";
-import { logger, startTimer, requestLogger, getMetrics, recordToolCall, recordAuthFailure } from "./logger.js";
+import { logger, startTimer, requestLogger, getMetrics, recordAuthFailure } from "./logger.js";
 import type { Ports } from "./ports/types.js";
 import { createPorts, closePorts } from "./ports/factory.js";
 
@@ -33,9 +33,6 @@ const getPorts = () => {
   });
   return portsPromise;
 };
-
-const server = createServer(config, getPorts);
-const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
 
 const app = createMcpExpressApp({ host });
 
@@ -86,11 +83,22 @@ app.post("/unregister", authRoutes.unregister);
 app.post("/mcp", async (req: any, res: any) => {
   const timer = startTimer("mcp.request");
 
-  if (config.authRequired && config.admin) {
+  if (config.authRequired) {
+    if (!config.admin) {
+      timer.end({ authFailed: true, errorCode: "ADMIN_NOT_CONFIGURED", status: 503 });
+      recordAuthFailure();
+      logger.warn("MCP auth unavailable", { code: "ADMIN_NOT_CONFIGURED", status: 503 });
+      return res.status(503).json({
+        jsonrpc: "2.0",
+        error: { code: -32001, message: "ADMIN_NOT_CONFIGURED", data: { status: 503 } },
+        id: req.body?.id ?? null,
+      });
+    }
+
     try {
       const token = extractBearer(req.headers.authorization);
-      const backend = await getPorts();
-      const authCtx = await validateAccountJwt(token, config, backend);
+      const ports = await getPorts();
+      const authCtx = await validateAccountJwt(token, config, ports);
       (req as any).__auth = authCtx;
       logger.debug("MCP auth success", { accountId: authCtx.accountId, issuer: authCtx.issuer });
     } catch (e) {
@@ -101,12 +109,21 @@ app.post("/mcp", async (req: any, res: any) => {
       return res.status(err.status || 401).json({
         jsonrpc: "2.0",
         error: { code: -32001, message: err.code || "AUTH_FAILED", data: { status: err.status || 401 } },
-        id: null,
+        id: req.body?.id ?? null,
       });
     }
   }
 
+  // Stateless streamable HTTP: each request gets a fresh MCP server + transport.
+  const requestServer = createServer(config, getPorts);
+  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+  res.on("close", () => {
+    transport.close().catch(() => {});
+    requestServer.close().catch(() => {});
+  });
+
   try {
+    await requestServer.connect(transport);
     await runWithAuth(req.__auth, () => transport.handleRequest(req, res, req.body));
     timer.end({ accountId: req.__auth?.accountId });
   } catch (error) {
@@ -120,7 +137,7 @@ app.post("/mcp", async (req: any, res: any) => {
       res.status(500).json({
         jsonrpc: "2.0",
         error: { code: -32603, message: "Internal server error" },
-        id: null,
+        id: req.body?.id ?? null,
       });
     }
   }
@@ -159,8 +176,6 @@ app.use((err: any, _req: any, res: any, _next: any) => {
   }
 });
 
-await server.connect(transport);
-
 const listener = app.listen(port, host, (error?: Error) => {
   if (error) {
     logger.error("Failed to start HTTP server", { error: error.message, stack: error.stack });
@@ -172,8 +187,6 @@ const listener = app.listen(port, host, (error?: Error) => {
 async function shutdown() {
   logger.info("Shutting down hyper-mcp HTTP server...");
   listener.close();
-  await transport.close();
-  await server.close();
   await closePorts();
   logger.info("hyper-mcp HTTP server stopped");
   process.exit(0);

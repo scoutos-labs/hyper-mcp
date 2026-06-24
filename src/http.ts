@@ -11,7 +11,7 @@ const config = loadConfig();
 const server = createServer(config);
 const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
 
-const app = createMcpExpressApp();
+const app = createMcpExpressApp({ host });
 
 app.get("/", (_req: any, res: any) => {
   res.status(200).type("html").send(landingPage());

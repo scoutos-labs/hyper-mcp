@@ -18,6 +18,21 @@ services:
         value: "false"
       - key: HYPER_MCP_ALLOW_DANGEROUS
         value: "false"
+      # Auth
+      - key: HYPER_MCP_AUTH_REQUIRED
+        value: "true"
+      # Admin trust root — set ONE of the following in Render dashboard:
+      #   HYPER_MCP_ADMIN_PUBLIC_JWK  (inline JWK JSON)
+      #   HYPER_MCP_ADMIN_JWKS_URL   (JWKS endpoint URL)
+      # Both require ISSUER and AUDIENCE below.
+      - key: HYPER_MCP_ADMIN_ISSUER
+        sync: false
+      - key: HYPER_MCP_ADMIN_AUDIENCE
+        value: hyper-mcp
+      - key: HYPER_MCP_ADMIN_KID
+        sync: false
+      - key: HYPER_MCP_JWKS_CACHE_SECONDS
+        value: "300"
     disk:
       name: hyper-mcp-pglite
       mountPath: /var/data

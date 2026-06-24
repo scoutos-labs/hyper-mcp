@@ -142,6 +142,23 @@ app.delete("/mcp", (_req: any, res: any) => {
   });
 });
 
+
+// Express error handler — catches errors that escape route handlers
+app.use((err: any, _req: any, res: any, _next: any) => {
+  logger.error("unhandled express error", {
+    error: err?.message || String(err),
+    stack: err?.stack,
+    status: err?.status || 500,
+  });
+  if (!res.headersSent) {
+    res.status(err?.status || 500).json({
+      jsonrpc: "2.0",
+      error: { code: -32603, message: err?.message || "Internal server error" },
+      id: null,
+    });
+  }
+});
+
 await server.connect(transport);
 
 const listener = app.listen(port, host, (error?: Error) => {

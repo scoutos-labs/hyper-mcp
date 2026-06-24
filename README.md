@@ -250,6 +250,23 @@ npm run build
 npm test          # 40 tests across ports, auth, and tenant isolation
 ```
 
+### Smoke tests
+
+The smoke script checks public health/landing/metrics endpoints, MCP method guards, and the expected unauthenticated auth posture for both open local dev and protected deployments.
+
+```sh
+npm run smoke:local   # expects a local server at http://localhost:3000
+npm run smoke:render  # checks https://hyper-mcp.onrender.com
+npm run smoke:all     # local + Render
+```
+
+Custom targets and authenticated MCP checks:
+
+```sh
+npm run smoke -- https://your-service.onrender.com
+SMOKE_ACCOUNT_JWT=<account-jwt> npm run smoke:render
+```
+
 ## License
 
 MIT

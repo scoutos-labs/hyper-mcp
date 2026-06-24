@@ -6,6 +6,7 @@ import { createServer } from "./server.js";
 import { landingPage } from "./landing.js";
 
 const port = Number(process.env.PORT || 3000);
+const host = process.env.HOST || "0.0.0.0";
 const config = loadConfig();
 const server = createServer(config);
 const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
@@ -59,12 +60,12 @@ app.delete("/mcp", (_req: any, res: any) => {
 
 await server.connect(transport);
 
-const listener = app.listen(port, (error?: Error) => {
+const listener = app.listen(port, host, (error?: Error) => {
   if (error) {
     console.error("Failed to start hyper-mcp HTTP server", error);
     process.exit(1);
   }
-  console.log(`hyper-mcp HTTP server listening on :${port}`);
+  console.log(`hyper-mcp HTTP server listening on ${host}:${port}`);
   console.log(`MCP endpoint: /mcp`);
 });
 

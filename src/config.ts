@@ -13,6 +13,7 @@ export interface Config {
   authRequired: boolean;
   admin: AdminTrustRoot | null;
   jwksCacheSeconds: number;
+  backend: string;
 }
 
 function parseAdminTrustRoot(env: Record<string, string | undefined>): AdminTrustRoot | null {
@@ -47,5 +48,6 @@ export function loadConfig(env = process.env as Record<string, string | undefine
     authRequired: env.HYPER_MCP_AUTH_REQUIRED !== "false",
     admin,
     jwksCacheSeconds: Number(env.HYPER_MCP_JWKS_CACHE_SECONDS || 300),
+    backend: env.HYPER_MCP_BACKEND || "pglite",
   };
 }

@@ -9,7 +9,8 @@ import { validateAccountJwt, extractBearer } from "./auth.js";
 import { PortError } from "./errors.js";
 import { runWithAuth } from "./auth-context.js";
 import { logger, startTimer, requestLogger, getMetrics, recordToolCall, recordAuthFailure } from "./logger.js";
-import type { PgliteBackend } from "./pglite-backend.js";
+import type { Ports } from "./ports/types.js";
+import { createPorts, closePorts } from "./ports/factory.js";
 
 const port = Number(process.env.PORT || 3000);
 const host = process.env.HOST || "0.0.0.0";
@@ -23,19 +24,17 @@ logger.info("hyper-mcp starting", {
   adminConfigured: !!config.admin,
 });
 
-// Lazy backend
-let backendPromise: Promise<PgliteBackend> | undefined;
-const getBackend = () => {
-  backendPromise ??= import("./pglite-backend.js").then(({ PgliteBackend }) => {
-    logger.info("PGLite backend initializing", { pgDir: config.pgDir });
-    const backend = new PgliteBackend(config.pgDir);
-    logger.info("PGLite backend ready", { pgDir: config.pgDir });
-    return backend;
+// Lazy ports via factory
+let portsPromise: Promise<Ports> | undefined;
+const getPorts = () => {
+  portsPromise ??= createPorts(config).then(ports => {
+    logger.info("Backend ready", { backend: config.backend, pgDir: config.pgDir });
+    return ports;
   });
-  return backendPromise;
+  return portsPromise;
 };
 
-const server = createServer(config, getBackend);
+const server = createServer(config, getPorts);
 const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
 
 const app = createMcpExpressApp({ host });
@@ -64,19 +63,21 @@ app.get("/metrics", (_req: any, res: any) => {
   res.status(200).json(getMetrics());
 });
 
-// Auth routes (admin-protected)
-const authRoutes = createAuthRoutes(config, {
-  accountCreate: async (...args: any[]) => (await getBackend()).accountCreate(...(args as [any, any, any, any, any])),
-  accountGet: async (...args: any[]) => (await getBackend()).accountGet(...(args as [any])),
-  accountGetByIssuer: async (...args: any[]) => (await getBackend()).accountGetByIssuer(...(args as [any])),
-  accountDisable: async (...args: any[]) => (await getBackend()).accountDisable(...(args as [any])),
-  accountAddKey: async (...args: any[]) => (await getBackend()).accountAddKey(...(args as [any, any, any])),
-  accountGetKeys: async (...args: any[]) => (await getBackend()).accountGetKeys(...(args as [any])),
-  accountAddJwksUrl: async (...args: any[]) => (await getBackend()).accountAddJwksUrl(...(args as [any, any])),
-  accountGetJwksUrl: async (...args: any[]) => (await getBackend()).accountGetJwksUrl(...(args as [any])),
-  accountSetCachedJwks: async (...args: any[]) => (await getBackend()).accountSetCachedJwks(...(args as [any, any, any])),
-  auditLog: async (...args: any[]) => (await getBackend()).auditLog(...(args as [any, any, any, any, any])),
-} as unknown as PgliteBackend);
+// Auth routes (admin-protected) — delegate to lazy Ports
+const authBackend = {
+  accountCreate: async (...args: any[]) => (await getPorts()).accountCreate(...(args as Parameters<Ports["accountCreate"]>)),
+  accountGet: async (...args: any[]) => (await getPorts()).accountGet(...(args as [string])),
+  accountGetByIssuer: async (...args: any[]) => (await getPorts()).accountGetByIssuer(...(args as [string])),
+  accountDisable: async (...args: any[]) => (await getPorts()).accountDisable(...(args as [string])),
+  accountAddKey: async (...args: any[]) => (await getPorts()).accountAddKey(...(args as [string, string, object])),
+  accountGetKeys: async (...args: any[]) => (await getPorts()).accountGetKeys(...(args as [string])),
+  accountAddJwksUrl: async (...args: any[]) => (await getPorts()).accountAddJwksUrl(...(args as [string, string])),
+  accountGetJwksUrl: async (...args: any[]) => (await getPorts()).accountGetJwksUrl(...(args as [string])),
+  auditLog: async (...args: any[]) => (await getPorts()).auditLog(...(args as [string | null, string | null, string, string])),
+  auditLogQuery: async (...args: any[]) => (await getPorts()).auditLogQuery(...(args as [string])),
+} as unknown as Ports;
+
+const authRoutes = createAuthRoutes(config, authBackend);
 
 app.post("/register", authRoutes.register);
 app.post("/unregister", authRoutes.unregister);
@@ -88,7 +89,7 @@ app.post("/mcp", async (req: any, res: any) => {
   if (config.authRequired && config.admin) {
     try {
       const token = extractBearer(req.headers.authorization);
-      const backend = await getBackend();
+      const backend = await getPorts();
       const authCtx = await validateAccountJwt(token, config, backend);
       (req as any).__auth = authCtx;
       logger.debug("MCP auth success", { accountId: authCtx.accountId, issuer: authCtx.issuer });
@@ -156,6 +157,7 @@ async function shutdown() {
   listener.close();
   await transport.close();
   await server.close();
+  await closePorts();
   logger.info("hyper-mcp HTTP server stopped");
   process.exit(0);
 }

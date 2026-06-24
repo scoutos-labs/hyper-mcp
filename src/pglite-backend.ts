@@ -4,13 +4,14 @@ import { dirname } from "node:path";
 import { PGlite } from "@electric-sql/pglite";
 import { PortError } from "./errors.js";
 import { applyUpdate, matchFilter, projectDoc, sortDocs, type Doc } from "./mongo.js";
+import type { Ports } from "./ports/types.js";
 
 const MAX_CACHE_BYTES = 1024 * 1024;
 const MAX_BLOB_BYTES = 100 * 1024 * 1024;
 const MAX_BULK = 1000;
 const DEFAULT_ACCOUNT = "default";
 
-export class PgliteBackend {
+export class PgliteBackend implements Ports {
   private db: PGlite;
   private ready: Promise<void>;
 
@@ -326,7 +327,7 @@ export class PgliteBackend {
     return { files: r.rows, cursor: next < total ? String(next) : undefined, total };
   }
   async blobCopy(accountId: string | undefined, sourceKey: string, destinationKey: string, metadata?: Record<string, string>) { const src = await this.blobGetBase64(accountId, sourceKey); return this.blobPutBase64(accountId, destinationKey, src.contentBase64, src.contentType, metadata); }
-  async blobSign(accountId: string | undefined, key: string, action: "get" | "put", options: { expiresIn?: number } = {}) { const expiresAt = new Date(Date.now() + Math.min(options.expiresIn ?? 3600, 604800) * 1000).toISOString(); return { url: `pglite://blob/${encodeURIComponent(key)}?action=${action}`, expiresAt, method: action === "put" ? "PUT" : "GET" }; }
+  async blobSign(accountId: string | undefined, key: string, action: "get" | "put", options: { expiresIn?: number } = {}) { const expiresAt = new Date(Date.now() + Math.min(options.expiresIn ?? 3600, 604800) * 1000).toISOString(); return { url: `pglite://blob/${encodeURIComponent(key)}?action=${action}`, expiresAt, method: action === "put" ? "PUT" as const : "GET" as const }; }
 
   // Queue
   async queueCreateTopic(accountId: string | undefined, topic: string, partitions = 1, replicationFactor = 1, config?: any) {
@@ -385,7 +386,7 @@ export class PgliteBackend {
   async queueNack(accountId: string | undefined, topic: string, subscriptionId: string, partition: number, offset: number, reason?: string) { return { ok: true, topic, subscriptionId, partition, offset, reason }; }
   async queueSeek(accountId: string | undefined, topic: string, subscriptionId: string, partition: number, offset: number | "earliest" | "latest") {
     const aid = this.acct(accountId);
-    let next = offset === "earliest" ? 0 : offset;
+    let next: number = offset === "earliest" ? 0 : (typeof offset === "number" ? offset : 0);
     if (offset === "latest") { const r = await this.q<{ next: number }>(`SELECT COALESCE(max(offset_id)+1,0)::int AS next FROM queue_messages WHERE account_id=$1 AND topic=$2`, [aid, topic]); next = Number(r.rows[0]?.next ?? 0); }
     await this.q(`UPDATE queue_subscriptions SET next_offset=$4::int WHERE account_id=$1 AND subscription_id=$2 AND topic=$3`, [aid, subscriptionId, topic, next]);
     return { ok: true, topic, subscriptionId, partition, offset: next };

@@ -456,10 +456,24 @@ export class PgliteBackend implements Ports {
 
   // Auth
   async accountCreate(accountId: string, name: string, issuer: string, audience: string, scopes: string[]) {
+    // Enforce unique active issuer identity: no two active accounts may share
+    // an issuer, otherwise JWT auth by issuer could resolve to the wrong account.
+    const clash = await this.q<{ account_id: string }>(
+      `SELECT account_id FROM accounts WHERE issuer=$1 AND status='active' AND account_id<>$2`,
+      [issuer, accountId],
+    );
+    if (clash.rows.length > 0) {
+      throw new PortError("ISSUER_CONFLICT", `Issuer '${issuer}' is already in use by active account '${clash.rows[0].account_id}'`, 409);
+    }
     try {
       await this.q(`INSERT INTO accounts(account_id,name,issuer,audience,status,scopes) VALUES($1,$2,$3,$4,'active',$5::jsonb) ON CONFLICT(account_id) DO UPDATE SET name=excluded.name, issuer=excluded.issuer, audience=excluded.audience, scopes=excluded.scopes, status='active', updated_at=now()`, [accountId, name, issuer, audience, JSON.stringify(scopes)]);
     } catch (e) {
-      throw new PortError("ACCOUNT_CREATE_FAILED", `Failed to create account: ${(e as Error).message}`, 400);
+      // Backstop for races: a DB-level unique violation still surfaces as 409.
+      const msg = (e as Error).message || "";
+      if (/unique/i.test(msg)) {
+        throw new PortError("ISSUER_CONFLICT", `Issuer '${issuer}' is already in use`, 409);
+      }
+      throw new PortError("ACCOUNT_CREATE_FAILED", `Failed to create account: ${msg}`, 400);
     }
     return { ok: true, accountId, status: "active" as const, scopes };
   }

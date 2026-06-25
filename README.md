@@ -215,8 +215,9 @@ HYPER_MCP_ALLOW_DANGEROUS=false
 # Backend adapter
 HYPER_MCP_BACKEND=pglite    # pglite | scoutos (future) | memory (future)
 
-# Auth
-HYPER_MCP_AUTH_REQUIRED=true
+# Auth / trust mode
+HYPER_MCP_TRUST_MODE=hosted          # hosted (auth required) | local (trusted, default account)
+HYPER_MCP_AUTH_REQUIRED=true         # legacy flag; trust mode is the source of truth
 HYPER_MCP_ADMIN_PUBLIC_JWK=...       # or HYPER_MCP_ADMIN_JWKS_URL=...
 HYPER_MCP_ADMIN_ISSUER=admin-agent
 HYPER_MCP_ADMIN_AUDIENCE=hyper-mcp
@@ -224,13 +225,30 @@ HYPER_MCP_ADMIN_KID=admin-1
 HYPER_MCP_JWKS_CACHE_SECONDS=300
 ```
 
+### Trust mode
+
+`HYPER_MCP_TRUST_MODE` is the security boundary:
+
+- **`hosted`** — auth is required. `/mcp` validates an account JWT; tool handlers
+  fail closed with `AUTH_REQUIRED` when no auth context is present. Without an
+  admin trust root, HTTP `/mcp` returns `503 admin_not_configured` and the stdio
+  transport refuses to start. Use this for any deployed/shared service.
+- **`local`** — trusted mode for stdio / local dev. No auth is required and tools
+  run as the `default` account. Never use `local` for a shared deployment.
+
+If `HYPER_MCP_TRUST_MODE` is unset, it is inferred from `HYPER_MCP_AUTH_REQUIRED`
+(`true` → `hosted`, `false` → `local`) and a startup warning is logged. Set it
+explicitly in production.
+
 To run without auth (local dev):
 
 ```env
+HYPER_MCP_TRUST_MODE=local
 HYPER_MCP_AUTH_REQUIRED=false
 ```
 
-All port data uses `account_id` for tenant isolation. Without auth, `account_id` defaults to `"default"`.
+All port data uses `account_id` for tenant isolation. In local mode (or any
+unauthenticated flow), `account_id` defaults to `"default"`.
 
 ## Deploy to Render
 

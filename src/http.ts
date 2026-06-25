@@ -17,7 +17,15 @@ logger.info("hyper-mcp starting", {
   allowDangerous: config.allowDangerous,
   authRequired: config.authRequired,
   adminConfigured: !!config.admin,
+  trustMode: config.trustMode,
 });
+
+if (config.trustModeInferred) {
+  logger.warn(
+    `HYPER_MCP_TRUST_MODE not set; inferred "${config.trustMode}". Set it explicitly to remove this warning.`,
+    { trustMode: config.trustMode },
+  );
+}
 
 // Lazy ports via factory
 let portsPromise: Promise<Ports> | undefined;

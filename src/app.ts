@@ -67,7 +67,7 @@ export function createApp(config: Config, getPorts: PortsGetter): ReturnType<typ
   app.post("/mcp", async (req: any, res: any) => {
     const timer = startTimer("mcp.request");
 
-    if (config.authRequired) {
+    if (config.trustMode === "hosted") {
       if (!config.admin) {
         timer.end({ authFailed: true, errorCode: "ADMIN_NOT_CONFIGURED", status: 503 });
         recordAuthFailure();

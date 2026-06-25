@@ -2,11 +2,11 @@
 
 MCP server exposing ScoutOS-style ports to agents, backed by persistent [PGLite](https://pglite.dev/):
 
-- **data**: JSON document collections with Mongo-style queries
-- **cache**: JSON values with TTL, atomic counters
-- **blob**: text/base64 file storage with metadata
-- **queue**: topics, subscriptions, poll/ack/nack/seek
-- **search**: persistent document indexes with full-text query
+- **data**: JSON document collections with Mongo-style queries (filters/sort run in-process; indexes are compatibility metadata)
+- **cache**: JSON values with TTL, atomic counter helpers (increment/decrement are atomic under concurrency)
+- **blob**: text/base64 file storage with metadata (base64 text in PGLite; `blob_sign` returns `pglite://` pseudo URLs for MVP, not externally usable signed URLs)
+- **queue**: topics, subscriptions, poll/ack/nack/seek (lightweight MVP, not Kafka-grade; offsets are allocated atomically; partitions partial)
+- **search**: persistent document indexes with simple contains/match/term query (no scoring or real full-text index)
 
 ## Quick start
 
@@ -24,6 +24,7 @@ npm run start:stdio    # stdio MCP transport (local agent)
 |-------|------|-------------|
 | `GET /` | public | Landing page |
 | `GET /health` | public | Health check |
+| `GET /metrics` | public or admin JWT | In-process metrics (public unless `HYPER_MCP_METRICS_PUBLIC=false`) |
 | `POST /mcp` | account JWT | MCP streamable HTTP transport |
 | `POST /register` | admin JWT | Register an agent account |
 | `POST /unregister` | admin JWT | Disable an agent account |
@@ -146,6 +147,12 @@ Response:
 }
 ```
 
+Re-registering an existing `accountId` **fully replaces** its auth material:
+all previously stored inline keys and JWKS URLs are cleared before the new
+`publicJwk` or `jwksUrl` is stored. Switching auth modes (inline JWK ↔ JWKS
+URL) therefore deactivates the old credential. An `auth_replace` audit entry
+records each replacement.
+
 ### Unregister an account
 
 ```sh
@@ -209,14 +216,16 @@ curl -X POST https://your-service.onrender.com/mcp \
 HYPER_MCP_PGLITE_DIR=.hyper-mcp/pgdata
 
 # Safety
-HYPER_MCP_READONLY=false
+HYPER_MCP_READONLY=false            # blocks MCP writes AND admin account mutations (/register, /unregister)
 HYPER_MCP_ALLOW_DANGEROUS=false
+HYPER_MCP_METRICS_PUBLIC=true       # set false to require an admin JWT for /metrics
 
 # Backend adapter
 HYPER_MCP_BACKEND=pglite    # pglite | scoutos (future) | memory (future)
 
-# Auth
-HYPER_MCP_AUTH_REQUIRED=true
+# Auth / trust mode
+HYPER_MCP_TRUST_MODE=hosted          # hosted (auth required) | local (trusted, default account)
+HYPER_MCP_AUTH_REQUIRED=true         # legacy flag; trust mode is the source of truth
 HYPER_MCP_ADMIN_PUBLIC_JWK=...       # or HYPER_MCP_ADMIN_JWKS_URL=...
 HYPER_MCP_ADMIN_ISSUER=admin-agent
 HYPER_MCP_ADMIN_AUDIENCE=hyper-mcp
@@ -224,13 +233,30 @@ HYPER_MCP_ADMIN_KID=admin-1
 HYPER_MCP_JWKS_CACHE_SECONDS=300
 ```
 
+### Trust mode
+
+`HYPER_MCP_TRUST_MODE` is the security boundary:
+
+- **`hosted`** — auth is required. `/mcp` validates an account JWT; tool handlers
+  fail closed with `AUTH_REQUIRED` when no auth context is present. Without an
+  admin trust root, HTTP `/mcp` returns `503 admin_not_configured` and the stdio
+  transport refuses to start. Use this for any deployed/shared service.
+- **`local`** — trusted mode for stdio / local dev. No auth is required and tools
+  run as the `default` account. Never use `local` for a shared deployment.
+
+If `HYPER_MCP_TRUST_MODE` is unset, it is inferred from `HYPER_MCP_AUTH_REQUIRED`
+(`true` → `hosted`, `false` → `local`) and a startup warning is logged. Set it
+explicitly in production.
+
 To run without auth (local dev):
 
 ```env
+HYPER_MCP_TRUST_MODE=local
 HYPER_MCP_AUTH_REQUIRED=false
 ```
 
-All port data uses `account_id` for tenant isolation. Without auth, `account_id` defaults to `"default"`.
+All port data uses `account_id` for tenant isolation. In local mode (or any
+unauthenticated flow), `account_id` defaults to `"default"`.
 
 ## Deploy to Render
 
@@ -247,7 +273,7 @@ Set admin env vars in Render's dashboard after first deploy.
 ```sh
 npm run typecheck
 npm run build
-npm test          # 40 tests across ports, auth, and tenant isolation
+npm test          # see output for the current count (ports, auth, tenant isolation, JWT, HTTP routes, trust mode, concurrency)
 ```
 
 ### Smoke tests

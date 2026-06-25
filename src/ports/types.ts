@@ -128,6 +128,8 @@ export interface AccountPort {
   accountGetKeys(accountId: string): Promise<Array<{ kid: string; publicJwk: any }>>;
   accountAddJwksUrl(accountId: string, jwksUrl: string): Promise<{ ok: boolean; accountId: string; jwksUrl: string }>;
   accountGetJwksUrl(accountId: string): Promise<any>;
+  /** Remove all stored keys and JWKS URL for an account (auth-material reset). */
+  accountClearAuth(accountId: string): Promise<{ ok: boolean; accountId: string }>;
   auditLogQuery(accountId: string): Promise<any[]>;
   auditLog(actor: string | null, accountId: string | null, action: string, outcome: string, metadata?: Record<string, unknown>): Promise<void>;
 }

@@ -29,7 +29,7 @@ export function createServer(config: Config, getPorts: PortsGetter) {
   const server = new McpServer({ name: "hyper-mcp", version: "0.1.0" }, { capabilities: { logging: {} } });
 
   server.registerResource("ports", "scoutos://ports", { mimeType: "application/json" }, async () => ({
-    contents: [{ uri: "scoutos://ports", text: JSON.stringify({ backend: "pglite", persistentDir: config.pgDir, ports: ["data", "cache", "blob", "queue", "search"], readOnly: config.readOnly, authRequired: config.authRequired }, null, 2) }]
+    contents: [{ uri: "scoutos://ports", text: JSON.stringify({ backend: config.backend, persistentDir: config.pgDir, ports: ["data", "cache", "blob", "queue", "search"], readOnly: config.readOnly, authRequired: config.authRequired, trustMode: config.trustMode }, null, 2) }]
   }));
 
   function tool(name: string, description: string, inputSchema: any, requiredScope: string, handler: (args: any, _ports: Ports, accountId: string | undefined) => Promise<unknown>, readOnly = false) {
@@ -43,8 +43,10 @@ export function createServer(config: Config, getPorts: PortsGetter) {
         const ports = await getPorts();
 
         let accountId: string | undefined;
-        // Scope enforcement when auth is required
-        if (config.authRequired && config.admin) {
+        // Scope enforcement: hosted trust mode requires an auth context and
+        // the required scope. Local trust mode runs tools as the default
+        // account without auth (explicit opt-in for stdio / local dev).
+        if (config.trustMode === "hosted") {
           const authCtx = getAuthContext();
           if (!authCtx) {
             throw new PortError("AUTH_REQUIRED", "Authentication required", 401);

@@ -21,6 +21,8 @@ services:
       # Auth
       - key: HYPER_MCP_AUTH_REQUIRED
         value: "true"
+      - key: HYPER_MCP_TRUST_MODE
+        value: hosted
       # Admin trust root — set ONE of the following in Render dashboard:
       #   HYPER_MCP_ADMIN_PUBLIC_JWK  (inline JWK JSON)
       #   HYPER_MCP_ADMIN_JWKS_URL   (JWKS endpoint URL)

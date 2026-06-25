@@ -504,3 +504,31 @@ Acceptance criteria:
 - Developer can sign a JWT.
 - Developer can call `/mcp` with the JWT.
 - Render env setup is documented.
+
+## Replacement semantics (Option A — full replace)
+
+`/register` is the single account upsert endpoint. When it targets an existing
+account, it **fully replaces** that account's auth material before installing
+the new credential:
+
+1. `accountCreate` upserts the account row (name, issuer, audience, scopes,
+   status=`active`).
+2. If the account already existed, `accountClearAuth` deletes every row in
+   `account_keys` and `account_jwks` for that `accountId`, and an
+   `auth_replace` audit entry is written.
+3. The new credential is then stored — either `accountAddKey` (inline public
+   JWK) or `accountAddJwksUrl` (JWKS URL), exactly one of which is required.
+
+Consequences:
+
+- Re-registering from an inline JWK to a JWKS URL removes the old inline key,
+  so it can no longer authenticate.
+- Re-registering from a JWKS URL to an inline JWK removes the JWKS URL, so it
+  is no longer consulted.
+- Single-mode re-registration (same mode, refreshed key) replaces the prior
+  key/URL rather than accumulating them.
+- A fresh registration (new accountId) clears nothing (no-op) and behaves as
+  before.
+
+This avoids stale-key / stale-JWKS ambiguity during auth-mode switches. An
+`auth_replace` audit entry records each replacement with the new method.

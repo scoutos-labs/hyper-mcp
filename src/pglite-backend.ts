@@ -278,13 +278,24 @@ export class PgliteBackend implements Ports {
   }
   async cacheIncr(accountId: string | undefined, key: string, by = 1) {
     const aid = this.acct(accountId);
-    const got = await this.cacheGet(aid, key);
-    const cur = got.found ? got.value : 0;
-    if (typeof cur !== "number") throw new PortError("NOT_A_NUMBER", "Value is not a number", 400);
-    const value = cur + by;
-    if (got.found) await this.q(`UPDATE cache_entries SET value=$3::jsonb, updated_at=now() WHERE account_id=$1 AND key=$2`, [aid, key, JSON.stringify(value)]);
-    else await this.cacheSet(aid, key, value);
-    return { value };
+    // Atomic read-modify-write inside a serialized transaction so concurrent
+    // increments do not lose updates. TTL (expires_at) is preserved on update.
+    // Missing key: create with value=by and no TTL.
+    await this.ready;
+    return this.db.transaction(async (tx) => {
+      const r = await tx.query<{ value: unknown }>(`SELECT value FROM cache_entries WHERE account_id=$1 AND key=$2`, [aid, key]);
+      const row = r.rows[0];
+      if (row) {
+        const cur = row.value;
+        if (typeof cur !== "number") throw new PortError("NOT_A_NUMBER", "Value is not a number", 400);
+        const value = cur + by;
+        await tx.query(`UPDATE cache_entries SET value=$3::jsonb, updated_at=now() WHERE account_id=$1 AND key=$2`, [aid, key, JSON.stringify(value)]);
+        return { value };
+      }
+      const value = by;
+      await tx.query(`INSERT INTO cache_entries(account_id,key,value,expires_at) VALUES($1,$2,$3::jsonb,NULL) ON CONFLICT(account_id,key) DO UPDATE SET value=excluded.value, updated_at=now()`, [aid, key, JSON.stringify(value)]);
+      return { value };
+    });
   }
   async cacheDecr(accountId: string | undefined, key: string, by = 1) { return this.cacheIncr(accountId, key, -by); }
 
@@ -348,11 +359,17 @@ export class PgliteBackend implements Ports {
   async queuePublish(accountId: string | undefined, topic: string, msg: { key?: string; value: unknown; headers?: Record<string, string>; partition?: number }) {
     const aid = this.acct(accountId);
     await this.queueCreateTopic(aid, topic);
-    const off = await this.q<{ next: number }>(`SELECT COALESCE(max(offset_id)+1,0)::int AS next FROM queue_messages WHERE account_id=$1 AND topic=$2 AND partition=$3`, [aid, topic, msg.partition ?? 0]);
-    const offset = Number(off.rows[0]?.next ?? 0);
+    // Allocate the offset and insert inside a serialized transaction so
+    // concurrent publishers get unique, contiguous offsets with no collisions.
+    const partition = msg.partition ?? 0;
     const ts = Date.now();
-    await this.q(`INSERT INTO queue_messages(account_id,topic,partition,offset_id,id,key,value,headers,timestamp_ms) VALUES($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb,$9)`, [aid, topic, msg.partition ?? 0, offset, randomUUID(), msg.key ?? null, JSON.stringify(msg.value), JSON.stringify(msg.headers ?? {}), ts]);
-    return { ok: true, topic, partition: msg.partition ?? 0, offset, timestamp: ts };
+    await this.ready;
+    return this.db.transaction(async (tx) => {
+      const off = await tx.query<{ next: number }>(`SELECT COALESCE(max(offset_id)+1,0)::int AS next FROM queue_messages WHERE account_id=$1 AND topic=$2 AND partition=$3`, [aid, topic, partition]);
+      const offset = Number(off.rows[0]?.next ?? 0);
+      await tx.query(`INSERT INTO queue_messages(account_id,topic,partition,offset_id,id,key,value,headers,timestamp_ms) VALUES($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb,$9)`, [aid, topic, partition, offset, randomUUID(), msg.key ?? null, JSON.stringify(msg.value), JSON.stringify(msg.headers ?? {}), ts]);
+      return { ok: true, topic, partition, offset, timestamp: ts };
+    });
   }
   async queuePublishBatch(accountId: string | undefined, topic: string, messages: Array<any>) {
     if (messages.length > MAX_BULK) throw new PortError("QUEUE_BATCH_TOO_LARGE", "Max 1000 messages", 400);
@@ -456,10 +473,24 @@ export class PgliteBackend implements Ports {
 
   // Auth
   async accountCreate(accountId: string, name: string, issuer: string, audience: string, scopes: string[]) {
+    // Enforce unique active issuer identity: no two active accounts may share
+    // an issuer, otherwise JWT auth by issuer could resolve to the wrong account.
+    const clash = await this.q<{ account_id: string }>(
+      `SELECT account_id FROM accounts WHERE issuer=$1 AND status='active' AND account_id<>$2`,
+      [issuer, accountId],
+    );
+    if (clash.rows.length > 0) {
+      throw new PortError("ISSUER_CONFLICT", `Issuer '${issuer}' is already in use by active account '${clash.rows[0].account_id}'`, 409);
+    }
     try {
       await this.q(`INSERT INTO accounts(account_id,name,issuer,audience,status,scopes) VALUES($1,$2,$3,$4,'active',$5::jsonb) ON CONFLICT(account_id) DO UPDATE SET name=excluded.name, issuer=excluded.issuer, audience=excluded.audience, scopes=excluded.scopes, status='active', updated_at=now()`, [accountId, name, issuer, audience, JSON.stringify(scopes)]);
     } catch (e) {
-      throw new PortError("ACCOUNT_CREATE_FAILED", `Failed to create account: ${(e as Error).message}`, 400);
+      // Backstop for races: a DB-level unique violation still surfaces as 409.
+      const msg = (e as Error).message || "";
+      if (/unique/i.test(msg)) {
+        throw new PortError("ISSUER_CONFLICT", `Issuer '${issuer}' is already in use`, 409);
+      }
+      throw new PortError("ACCOUNT_CREATE_FAILED", `Failed to create account: ${msg}`, 400);
     }
     return { ok: true, accountId, status: "active" as const, scopes };
   }
@@ -494,6 +525,11 @@ export class PgliteBackend implements Ports {
   async accountGetJwksUrl(accountId: string) {
     const r = await this.q<any>(`SELECT jwks_url AS "jwksUrl", cached_jwks AS "cachedJwks", cache_expires_at AS "cacheExpiresAt" FROM account_jwks WHERE account_id=$1`, [accountId]);
     return r.rows[0] || null;
+  }
+  async accountClearAuth(accountId: string) {
+    await this.q(`DELETE FROM account_keys WHERE account_id=$1`, [accountId]);
+    await this.q(`DELETE FROM account_jwks WHERE account_id=$1`, [accountId]);
+    return { ok: true, accountId };
   }
   async accountSetCachedJwks(accountId: string, jwks: object, expiresAt: Date) {
     await this.q(`UPDATE account_jwks SET cached_jwks=$2::jsonb, cache_expires_at=$3 WHERE account_id=$1`, [accountId, JSON.stringify(jwks), expiresAt]);

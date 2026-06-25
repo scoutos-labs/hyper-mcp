@@ -318,6 +318,34 @@ npm run smoke -- https://your-service.onrender.com
 SMOKE_ACCOUNT_JWT=<account-jwt> npm run smoke:render
 ```
 
+## Agent integration
+
+`scripts/agent-integration.ts` verifies the end-to-end path a real agent takes:
+it uses the official MCP client SDK over the streamable HTTP transport to
+authenticate with a signed account JWT, run the `initialize` handshake, list
+tools, and call a representative write+read tool on each of the five ports
+(data, cache, blob, queue, search), plus a tenant-isolation check between two
+agents. This is the proof that a ScoutOS-hosted agent can leverage hyper-mcp.
+
+Self-contained (boots an in-process hyper-mcp with generated admin keys):
+
+```sh
+npm run integrate
+```
+
+Against a running deployment (the target must have an admin trust root
+configured whose private key you hold):
+
+```sh
+HYPER_MCP_ADMIN_PRIVATE_JWK='{"kty":"OKP","crv":"Ed25519","d":"...","kid":"admin-1"}' \
+  npm run integrate:url -- --url https://hyper-mcp.onrender.com
+```
+
+If the target reports `admin_not_configured`, set `HYPER_MCP_ADMIN_PUBLIC_JWK`
+(on the deploy) to the public counterpart of `HYPER_MCP_ADMIN_PRIVATE_JWK`
+first, then retry. The same flow runs as a vitest in
+`test/agent-integration.test.ts`.
+
 ## License
 
 MIT

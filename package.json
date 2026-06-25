@@ -18,7 +18,9 @@
     "smoke:render": "tsx scripts/smoke.ts --render",
     "smoke:all": "tsx scripts/smoke.ts --local --render",
     "start": "node dist/http.js",
-    "start:stdio": "node dist/index.js"
+    "start:stdio": "node dist/index.js",
+    "integrate": "tsx scripts/agent-integration.ts --local",
+    "integrate:url": "tsx scripts/agent-integration.ts --url"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.3",

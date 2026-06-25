@@ -20,17 +20,21 @@ afterEach(async () => {
 });
 
 describe("ports interface compliance", () => {
-  it("PgliteBackend satisfies the Ports interface", () => {
+  it("PgliteBackend satisfies the Ports interface", async () => {
     const backend = new PgliteBackend(dir);
-    // TypeScript will fail if PgliteBackend doesn't implement Ports
-    const ports: Ports = backend as Ports;
-    expect(ports).toBeDefined();
-    expect(typeof ports.dataCreate).toBe("function");
-    expect(typeof ports.cacheGet).toBe("function");
-    expect(typeof ports.blobPutText).toBe("function");
-    expect(typeof ports.queuePublish).toBe("function");
-    expect(typeof ports.searchQuery).toBe("function");
-    expect(typeof ports.accountCreate).toBe("function");
+    try {
+      // TypeScript will fail if PgliteBackend doesn't implement Ports
+      const ports: Ports = backend as Ports;
+      expect(ports).toBeDefined();
+      expect(typeof ports.dataCreate).toBe("function");
+      expect(typeof ports.cacheGet).toBe("function");
+      expect(typeof ports.blobPutText).toBe("function");
+      expect(typeof ports.queuePublish).toBe("function");
+      expect(typeof ports.searchQuery).toBe("function");
+      expect(typeof ports.accountCreate).toBe("function");
+    } finally {
+      await backend.close();
+    }
   });
 });
 

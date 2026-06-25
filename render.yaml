@@ -37,6 +37,19 @@ services:
         value: "300"
       - key: HYPER_MCP_BACKEND
         value: pglite
+      # Resource limits (defaults shown; override to tighten for your workload)
+      - key: HYPER_MCP_MAX_CACHE_BYTES
+        value: "1048576"      # 1 MiB cache value cap
+      - key: HYPER_MCP_MAX_BLOB_BYTES
+        value: "104857600"    # 100 MiB blob cap
+      - key: HYPER_MCP_MAX_DATA_PAGE_SIZE
+        value: "1000"         # data_find page ceiling
+      - key: HYPER_MCP_MAX_BLOB_LIST_PAGE_SIZE
+        value: "1000"         # blob_list page ceiling
+      - key: HYPER_MCP_MAX_QUEUE_POLL_BATCH
+        value: "10000"        # queue_poll batch ceiling
+      - key: HYPER_MCP_MAX_SEARCH_PAGE_SIZE
+        value: "10000"        # search_query page ceiling
     disk:
       name: hyper-mcp-pglite
       mountPath: /var/data

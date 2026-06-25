@@ -3,11 +3,10 @@ import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { PGlite } from "@electric-sql/pglite";
 import { PortError } from "./errors.js";
+import { DEFAULT_LIMITS, type ResourceLimits } from "./config.js";
 import { applyUpdate, matchFilter, projectDoc, sortDocs, type Doc } from "./mongo.js";
 import type { Ports } from "./ports/types.js";
 
-const MAX_CACHE_BYTES = 1024 * 1024;
-const MAX_BLOB_BYTES = 100 * 1024 * 1024;
 const MAX_BULK = 1000;
 const DEFAULT_ACCOUNT = "default";
 
@@ -15,7 +14,7 @@ export class PgliteBackend implements Ports {
   private db: PGlite;
   private ready: Promise<void>;
 
-  constructor(private dir: string) {
+  constructor(private dir: string, private limits: ResourceLimits = DEFAULT_LIMITS) {
     this.db = new PGlite(dir);
     this.ready = this.init();
   }
@@ -197,7 +196,7 @@ export class PgliteBackend implements Ports {
     const r = await this.q<{ document: Doc }>(`SELECT document FROM data_docs WHERE account_id=$1 AND collection=$2`, [aid, collection]);
     const matched = sortDocs(r.rows.map(x => x.document).filter(d => matchFilter(d, options.filter)), options.sort);
     const total = matched.length;
-    const limit = Math.min(Math.max(options.limit ?? 50, 1), 1000);
+    const limit = Math.min(Math.max(options.limit ?? 50, 1), this.limits.maxDataPageSize);
     const skip = options.cursor ? Number(options.cursor) || 0 : options.skip ?? 0;
     const page = matched.slice(skip, skip + limit).map(d => projectDoc(d, options.projection));
     const next = skip + page.length;
@@ -254,7 +253,7 @@ export class PgliteBackend implements Ports {
   private async purgeCache(accountId: string) { await this.q(`DELETE FROM cache_entries WHERE account_id=$1 AND expires_at IS NOT NULL AND expires_at <= now()`, [accountId]); }
   async cacheSet(accountId: string | undefined, key: string, value: unknown, ttl?: number) {
     const aid = this.acct(accountId);
-    if (Buffer.byteLength(JSON.stringify(value ?? null)) > MAX_CACHE_BYTES) throw new PortError("VALUE_TOO_LARGE", "Value exceeds 1MB", 413);
+    if (Buffer.byteLength(JSON.stringify(value ?? null)) > this.limits.maxCacheBytes) throw new PortError("VALUE_TOO_LARGE", `Value exceeds maxCacheBytes (${this.limits.maxCacheBytes})`, 413);
     await this.q(`INSERT INTO cache_entries(account_id,key,value,expires_at) VALUES($1,$2,$3::jsonb, CASE WHEN $4::int IS NULL THEN NULL ELSE now() + ($4::text || ' seconds')::interval END) ON CONFLICT(account_id,key) DO UPDATE SET value=excluded.value, expires_at=excluded.expires_at, updated_at=now()`, [aid, key, JSON.stringify(value ?? null), ttl ?? null]);
     return { ok: true, key, ttl: ttl ?? null };
   }
@@ -303,7 +302,7 @@ export class PgliteBackend implements Ports {
   async blobPutBase64(accountId: string | undefined, key: string, contentBase64: string, contentType = "application/octet-stream", metadata?: Record<string, string>) {
     const aid = this.acct(accountId);
     const buf = Buffer.from(contentBase64, "base64");
-    if (buf.byteLength > MAX_BLOB_BYTES) throw new PortError("BLOB_FILE_TOO_LARGE", "Blob exceeds 100MB", 413);
+    if (buf.byteLength > this.limits.maxBlobBytes) throw new PortError("BLOB_FILE_TOO_LARGE", `Blob exceeds maxBlobBytes (${this.limits.maxBlobBytes})`, 413);
     const etag = createHash("md5").update(buf).digest("hex");
     await this.q(`INSERT INTO blob_objects(account_id,key,content_base64,content_type,size,etag,metadata) VALUES($1,$2,$3,$4,$5,$6,$7::jsonb) ON CONFLICT(account_id,key) DO UPDATE SET content_base64=excluded.content_base64, content_type=excluded.content_type, size=excluded.size, etag=excluded.etag, metadata=excluded.metadata, updated_at=now()`, [aid, key, contentBase64, contentType, buf.byteLength, etag, JSON.stringify(metadata ?? null)]);
     return { ok: true, key, size: buf.byteLength, etag };
@@ -329,7 +328,7 @@ export class PgliteBackend implements Ports {
   }
   async blobList(accountId: string | undefined, options: { prefix?: string; limit?: number; cursor?: string } = {}) {
     const aid = this.acct(accountId);
-    const limit = Math.min(Math.max(options.limit ?? 100, 1), 1000);
+    const limit = Math.min(Math.max(options.limit ?? 100, 1), this.limits.maxBlobListPageSize);
     const offset = Number(options.cursor ?? 0);
     const r = await this.q<any>(`SELECT key,size,content_type AS "contentType",updated_at AS "lastModified" FROM blob_objects WHERE account_id=$1 AND ($2::text IS NULL OR key LIKE $2 || '%') ORDER BY key LIMIT $3 OFFSET $4`, [aid, options.prefix ?? null, limit, offset]);
     const c = await this.q<{ count: number }>(`SELECT count(*)::int AS count FROM blob_objects WHERE account_id=$1 AND ($2::text IS NULL OR key LIKE $2 || '%')`, [aid, options.prefix ?? null]);
@@ -391,7 +390,7 @@ export class PgliteBackend implements Ports {
     const sub = await this.q<any>(`SELECT * FROM queue_subscriptions WHERE account_id=$1 AND subscription_id=$2 AND topic=$3`, [aid, subscriptionId, topic]);
     if (!sub.rows[0]) throw new PortError("QUEUE_SUBSCRIPTION_NOT_FOUND", "Subscription not found", 404);
     const next = Number(sub.rows[0].next_offset);
-    const r = await this.q<any>(`SELECT id,topic,partition,offset_id AS offset,key,value,headers,timestamp_ms AS timestamp FROM queue_messages WHERE account_id=$1 AND topic=$2 AND offset_id >= $3 ORDER BY offset_id LIMIT $4`, [aid, topic, next, Math.min(limit, 10000)]);
+    const r = await this.q<any>(`SELECT id,topic,partition,offset_id AS offset,key,value,headers,timestamp_ms AS timestamp FROM queue_messages WHERE account_id=$1 AND topic=$2 AND offset_id >= $3 ORDER BY offset_id LIMIT $4`, [aid, topic, next, Math.min(limit, this.limits.maxQueuePollBatch)]);
     if (sub.rows[0].auto_commit && r.rows.length) await this.queueAck(aid, topic, subscriptionId, 0, Number(r.rows.at(-1).offset));
     return { ok: true, topic, messages: r.rows, hasMore: r.rows.length === limit };
   }
@@ -458,7 +457,7 @@ export class PgliteBackend implements Ports {
   }
   async searchQuery(accountId: string | undefined, index: string, body: any) {
     const aid = this.acct(accountId);
-    const size = Math.min(Math.max(body.size ?? 100, 1), 10000);
+    const size = Math.min(Math.max(body.size ?? 100, 1), this.limits.maxSearchPageSize);
     const from = Math.max(body.from ?? 0, 0);
     let docs = (await this.q<any>(`SELECT id,document,search_text FROM search_docs WHERE account_id=$1 AND index_name=$2`, [aid, index])).rows;
     const q = body.q ?? body.query;

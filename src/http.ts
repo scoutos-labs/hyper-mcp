@@ -18,6 +18,7 @@ logger.info("hyper-mcp starting", {
   authRequired: config.authRequired,
   adminConfigured: !!config.admin,
   trustMode: config.trustMode,
+  limits: config.limits,
 });
 
 if (config.trustModeInferred) {

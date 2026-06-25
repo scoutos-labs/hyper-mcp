@@ -32,7 +32,7 @@ export function createApp(config: Config, getPorts: PortsGetter): ReturnType<typ
     res.status(200).json({
       ok: true,
       service: "hyper-mcp",
-      backend: "pglite",
+      backend: config.backend,
       persistentDir: config.pgDir,
       readOnly: config.readOnly,
       authRequired: config.authRequired,

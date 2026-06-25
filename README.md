@@ -2,11 +2,11 @@
 
 MCP server exposing ScoutOS-style ports to agents, backed by persistent [PGLite](https://pglite.dev/):
 
-- **data**: JSON document collections with Mongo-style queries
-- **cache**: JSON values with TTL, atomic counters
-- **blob**: text/base64 file storage with metadata
-- **queue**: topics, subscriptions, poll/ack/nack/seek
-- **search**: persistent document indexes with full-text query
+- **data**: JSON document collections with Mongo-style queries (filters/sort run in-process; indexes are compatibility metadata)
+- **cache**: JSON values with TTL, counter helpers (not atomic under concurrency)
+- **blob**: text/base64 file storage with metadata (base64 text in PGLite; `blob_sign` returns `pglite://` pseudo URLs for MVP, not externally usable signed URLs)
+- **queue**: topics, subscriptions, poll/ack/nack/seek (lightweight MVP, not Kafka-grade; partitions partial)
+- **search**: persistent document indexes with simple contains/match/term query (no scoring or real full-text index)
 
 ## Quick start
 
@@ -24,6 +24,7 @@ npm run start:stdio    # stdio MCP transport (local agent)
 |-------|------|-------------|
 | `GET /` | public | Landing page |
 | `GET /health` | public | Health check |
+| `GET /metrics` | public | In-process metrics (public by default) |
 | `POST /mcp` | account JWT | MCP streamable HTTP transport |
 | `POST /register` | admin JWT | Register an agent account |
 | `POST /unregister` | admin JWT | Disable an agent account |
@@ -271,7 +272,7 @@ Set admin env vars in Render's dashboard after first deploy.
 ```sh
 npm run typecheck
 npm run build
-npm test          # 40 tests across ports, auth, and tenant isolation
+npm test          # see output for the current count (ports, auth, tenant isolation, JWT, HTTP routes, trust mode, concurrency)
 ```
 
 ### Smoke tests

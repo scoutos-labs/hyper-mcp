@@ -146,6 +146,12 @@ Response:
 }
 ```
 
+Re-registering an existing `accountId` **fully replaces** its auth material:
+all previously stored inline keys and JWKS URLs are cleared before the new
+`publicJwk` or `jwksUrl` is stored. Switching auth modes (inline JWK ↔ JWKS
+URL) therefore deactivates the old credential. An `auth_replace` audit entry
+records each replacement.
+
 ### Unregister an account
 
 ```sh

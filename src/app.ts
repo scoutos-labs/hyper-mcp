@@ -54,6 +54,7 @@ export function createApp(config: Config, getPorts: PortsGetter): ReturnType<typ
     accountGetKeys: async (...args: any[]) => (await getPorts()).accountGetKeys(...(args as [string])),
     accountAddJwksUrl: async (...args: any[]) => (await getPorts()).accountAddJwksUrl(...(args as [string, string])),
     accountGetJwksUrl: async (...args: any[]) => (await getPorts()).accountGetJwksUrl(...(args as [string])),
+    accountClearAuth: async (...args: any[]) => (await getPorts()).accountClearAuth(...(args as [string])),
     auditLog: async (...args: any[]) => (await getPorts()).auditLog(...(args as [string | null, string | null, string, string])),
     auditLogQuery: async (...args: any[]) => (await getPorts()).auditLogQuery(...(args as [string])),
   } as unknown as Ports;

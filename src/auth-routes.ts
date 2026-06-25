@@ -49,7 +49,16 @@ export function createAuthRoutes(config: Config, backend: Ports) {
 
       try {
         logger.info("registering account", { accountId, issuer });
+        const before = await backend.accountGet(accountId);
         await backend.accountCreate(accountId, name || accountId, issuer, audience, scopes);
+
+        // Option A — full replace: clear any prior auth material so a
+        // re-registration that switches auth mode (inline JWK <-> JWKS URL)
+        // does not leave stale keys that could still authenticate.
+        if (before) {
+          await backend.accountClearAuth(accountId);
+          await backend.auditLog("admin", accountId, "auth_replace", "success", { method: publicJwk ? "publicJwk" : "jwksUrl" });
+        }
 
         if (publicJwk) {
           const kid = (publicJwk as any).kid || "default";
@@ -60,9 +69,9 @@ export function createAuthRoutes(config: Config, backend: Ports) {
           await backend.accountAddJwksUrl(accountId, jwksUrl);
         }
 
-        await backend.auditLog("admin", accountId, "register", "success", { scopes });
+        await backend.auditLog("admin", accountId, "register", "success", { scopes, replaced: !!before });
         timer.end({ accountId, scopes });
-        logger.info("account registered", { accountId, scopes });
+        logger.info("account registered", { accountId, scopes, replaced: !!before });
 
         return res.status(201).json({
           ok: true,

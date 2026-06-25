@@ -3,9 +3,9 @@
 MCP server exposing ScoutOS-style ports to agents, backed by persistent [PGLite](https://pglite.dev/):
 
 - **data**: JSON document collections with Mongo-style queries (filters/sort run in-process; indexes are compatibility metadata)
-- **cache**: JSON values with TTL, counter helpers (not atomic under concurrency)
+- **cache**: JSON values with TTL, atomic counter helpers (increment/decrement are atomic under concurrency)
 - **blob**: text/base64 file storage with metadata (base64 text in PGLite; `blob_sign` returns `pglite://` pseudo URLs for MVP, not externally usable signed URLs)
-- **queue**: topics, subscriptions, poll/ack/nack/seek (lightweight MVP, not Kafka-grade; partitions partial)
+- **queue**: topics, subscriptions, poll/ack/nack/seek (lightweight MVP, not Kafka-grade; offsets are allocated atomically; partitions partial)
 - **search**: persistent document indexes with simple contains/match/term query (no scoring or real full-text index)
 
 ## Quick start

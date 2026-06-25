@@ -278,13 +278,24 @@ export class PgliteBackend implements Ports {
   }
   async cacheIncr(accountId: string | undefined, key: string, by = 1) {
     const aid = this.acct(accountId);
-    const got = await this.cacheGet(aid, key);
-    const cur = got.found ? got.value : 0;
-    if (typeof cur !== "number") throw new PortError("NOT_A_NUMBER", "Value is not a number", 400);
-    const value = cur + by;
-    if (got.found) await this.q(`UPDATE cache_entries SET value=$3::jsonb, updated_at=now() WHERE account_id=$1 AND key=$2`, [aid, key, JSON.stringify(value)]);
-    else await this.cacheSet(aid, key, value);
-    return { value };
+    // Atomic read-modify-write inside a serialized transaction so concurrent
+    // increments do not lose updates. TTL (expires_at) is preserved on update.
+    // Missing key: create with value=by and no TTL.
+    await this.ready;
+    return this.db.transaction(async (tx) => {
+      const r = await tx.query<{ value: unknown }>(`SELECT value FROM cache_entries WHERE account_id=$1 AND key=$2`, [aid, key]);
+      const row = r.rows[0];
+      if (row) {
+        const cur = row.value;
+        if (typeof cur !== "number") throw new PortError("NOT_A_NUMBER", "Value is not a number", 400);
+        const value = cur + by;
+        await tx.query(`UPDATE cache_entries SET value=$3::jsonb, updated_at=now() WHERE account_id=$1 AND key=$2`, [aid, key, JSON.stringify(value)]);
+        return { value };
+      }
+      const value = by;
+      await tx.query(`INSERT INTO cache_entries(account_id,key,value,expires_at) VALUES($1,$2,$3::jsonb,NULL) ON CONFLICT(account_id,key) DO UPDATE SET value=excluded.value, updated_at=now()`, [aid, key, JSON.stringify(value)]);
+      return { value };
+    });
   }
   async cacheDecr(accountId: string | undefined, key: string, by = 1) { return this.cacheIncr(accountId, key, -by); }
 
@@ -348,11 +359,17 @@ export class PgliteBackend implements Ports {
   async queuePublish(accountId: string | undefined, topic: string, msg: { key?: string; value: unknown; headers?: Record<string, string>; partition?: number }) {
     const aid = this.acct(accountId);
     await this.queueCreateTopic(aid, topic);
-    const off = await this.q<{ next: number }>(`SELECT COALESCE(max(offset_id)+1,0)::int AS next FROM queue_messages WHERE account_id=$1 AND topic=$2 AND partition=$3`, [aid, topic, msg.partition ?? 0]);
-    const offset = Number(off.rows[0]?.next ?? 0);
+    // Allocate the offset and insert inside a serialized transaction so
+    // concurrent publishers get unique, contiguous offsets with no collisions.
+    const partition = msg.partition ?? 0;
     const ts = Date.now();
-    await this.q(`INSERT INTO queue_messages(account_id,topic,partition,offset_id,id,key,value,headers,timestamp_ms) VALUES($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb,$9)`, [aid, topic, msg.partition ?? 0, offset, randomUUID(), msg.key ?? null, JSON.stringify(msg.value), JSON.stringify(msg.headers ?? {}), ts]);
-    return { ok: true, topic, partition: msg.partition ?? 0, offset, timestamp: ts };
+    await this.ready;
+    return this.db.transaction(async (tx) => {
+      const off = await tx.query<{ next: number }>(`SELECT COALESCE(max(offset_id)+1,0)::int AS next FROM queue_messages WHERE account_id=$1 AND topic=$2 AND partition=$3`, [aid, topic, partition]);
+      const offset = Number(off.rows[0]?.next ?? 0);
+      await tx.query(`INSERT INTO queue_messages(account_id,topic,partition,offset_id,id,key,value,headers,timestamp_ms) VALUES($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb,$9)`, [aid, topic, partition, offset, randomUUID(), msg.key ?? null, JSON.stringify(msg.value), JSON.stringify(msg.headers ?? {}), ts]);
+      return { ok: true, topic, partition, offset, timestamp: ts };
+    });
   }
   async queuePublishBatch(accountId: string | undefined, topic: string, messages: Array<any>) {
     if (messages.length > MAX_BULK) throw new PortError("QUEUE_BATCH_TOO_LARGE", "Max 1000 messages", 400);

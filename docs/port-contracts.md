@@ -32,14 +32,15 @@ adapter conformance suite.
 **Compatibility behavior (PGLite):**
 
 - JSON key/value entries with optional TTL (seconds).
-- `cache_incr` / `cache_decr` are read-then-write helper operations. They are
-  **not atomic under concurrency** and can lose updates when called in
-  parallel. (Step 7 of the hardening plan addresses this.)
+- `cache_incr` / `cache_decr` are atomic: the read-modify-write runs inside a
+  serialized PGLite transaction, so concurrent increments do not lose updates.
+  TTL (`expires_at`) is preserved across increments. A missing key is created
+  with `value = by` and no TTL.
 - `cache_ttl` returns `-1` (no TTL), `-2` (missing), or the remaining seconds.
 
 **Not a production guarantee:**
 
-- No atomic counters (until Step 7 lands).
+- Counters are atomic under concurrency (single-process PGLite).
 - No pub/sub, no eviction policies beyond TTL expiry.
 
 ## blob
@@ -62,8 +63,9 @@ adapter conformance suite.
 **Compatibility behavior (PGLite):**
 
 - Topics, subscriptions, poll/ack/nack/seek.
-- Offsets are allocated as `max(offset)+1`. Under concurrent publishers this
-  can collide. (Step 7 of the hardening plan addresses this.)
+- Offsets are allocated as `max(offset)+1` inside a serialized PGLite
+  transaction, so concurrent publishers get unique, contiguous offsets with no
+  collisions.
 - Partition support is partial: polling and subscriptions track a single
   `next_offset` rather than independent offsets per `(subscription, partition)`.
 
@@ -71,7 +73,7 @@ adapter conformance suite.
 
 - Not Kafka-grade. No consumer groups with rebalancing, no exactly-once, no
   retention policies beyond topic deletion.
-- Do not rely on unique/contiguous offsets under concurrency until Step 7.
+- Offsets are unique and contiguous under concurrency (single-process PGLite).
 
 ## search
 

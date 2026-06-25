@@ -21,6 +21,10 @@ export function createAuthRoutes(config: Config, backend: Ports) {
         return res.status(err.status || 401).json({ error: err.code, message: err.message });
       }
 
+      if (config.readOnly) {
+        return res.status(403).json({ error: "READ_ONLY_ADMIN_BLOCKED", message: "Service is in read-only mode; account registration is disabled" });
+      }
+
       const { accountId, name, issuer, audience, publicJwk, jwksUrl, ports } = req.body || {};
 
       if (!accountId || !issuer || !audience) {
@@ -103,6 +107,10 @@ export function createAuthRoutes(config: Config, backend: Ports) {
       } catch (e) {
         const err = e as PortError;
         return res.status(err.status || 401).json({ error: err.code, message: err.message });
+      }
+
+      if (config.readOnly) {
+        return res.status(403).json({ error: "READ_ONLY_ADMIN_BLOCKED", message: "Service is in read-only mode; account unregistration is disabled" });
       }
 
       const { accountId, confirm } = req.body || {};

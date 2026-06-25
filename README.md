@@ -24,7 +24,7 @@ npm run start:stdio    # stdio MCP transport (local agent)
 |-------|------|-------------|
 | `GET /` | public | Landing page |
 | `GET /health` | public | Health check |
-| `GET /metrics` | public | In-process metrics (public by default) |
+| `GET /metrics` | public or admin JWT | In-process metrics (public unless `HYPER_MCP_METRICS_PUBLIC=false`) |
 | `POST /mcp` | account JWT | MCP streamable HTTP transport |
 | `POST /register` | admin JWT | Register an agent account |
 | `POST /unregister` | admin JWT | Disable an agent account |
@@ -216,8 +216,9 @@ curl -X POST https://your-service.onrender.com/mcp \
 HYPER_MCP_PGLITE_DIR=.hyper-mcp/pgdata
 
 # Safety
-HYPER_MCP_READONLY=false
+HYPER_MCP_READONLY=false            # blocks MCP writes AND admin account mutations (/register, /unregister)
 HYPER_MCP_ALLOW_DANGEROUS=false
+HYPER_MCP_METRICS_PUBLIC=true       # set false to require an admin JWT for /metrics
 
 # Backend adapter
 HYPER_MCP_BACKEND=pglite    # pglite | scoutos (future) | memory (future)

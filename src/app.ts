@@ -4,7 +4,7 @@ import type { Config } from "./config.js";
 import { createServer } from "./server.js";
 import { landingPage } from "./landing.js";
 import { createAuthRoutes } from "./auth-routes.js";
-import { validateAccountJwt, extractBearer } from "./auth.js";
+import { validateAccountJwt, validateAdminJwt, extractBearer } from "./auth.js";
 import { PortError } from "./errors.js";
 import { runWithAuth } from "./auth-context.js";
 import { logger, startTimer, requestLogger, getMetrics, recordAuthFailure } from "./logger.js";
@@ -40,7 +40,16 @@ export function createApp(config: Config, getPorts: PortsGetter): ReturnType<typ
     });
   });
 
-  app.get("/metrics", (_req: any, res: any) => {
+  app.get("/metrics", async (req: any, res: any) => {
+    if (!config.metricsPublic) {
+      try {
+        const token = extractBearer(req.headers.authorization);
+        await validateAdminJwt(token, config);
+      } catch (e) {
+        const err = e as PortError;
+        return res.status(err.status || 401).json({ error: err.code || "AUTH_FAILED", message: err.message });
+      }
+    }
     res.status(200).json(getMetrics());
   });
 

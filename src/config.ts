@@ -21,6 +21,8 @@ export interface Config {
   trustMode: TrustMode;
   /** True when trustMode was derived rather than set explicitly via env. */
   trustModeInferred: boolean;
+  /** Whether /metrics is publicly readable (default true). When false, /metrics requires an admin JWT. */
+  metricsPublic: boolean;
 }
 
 function parseAdminTrustRoot(env: Record<string, string | undefined>): AdminTrustRoot | null {
@@ -71,6 +73,7 @@ export function loadConfig(env = process.env as Record<string, string | undefine
     backend: env.HYPER_MCP_BACKEND || "pglite",
     trustMode,
     trustModeInferred,
+    metricsPublic: env.HYPER_MCP_METRICS_PUBLIC !== "false",
   };
 }
 

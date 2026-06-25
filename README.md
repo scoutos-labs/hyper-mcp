@@ -70,6 +70,14 @@ Optional:
 ```env
 HYPER_MCP_ADMIN_KID=admin-1
 HYPER_MCP_JWKS_CACHE_SECONDS=300
+
+# Resource limits (cap per request; defaults match prior hardcoded behavior)
+HYPER_MCP_MAX_CACHE_BYTES=1048576        # reject cache values > 1 MiB (413 VALUE_TOO_LARGE)
+HYPER_MCP_MAX_BLOB_BYTES=104857600       # reject blobs > 100 MiB (413 BLOB_FILE_TOO_LARGE)
+HYPER_MCP_MAX_DATA_PAGE_SIZE=1000         # data_find page ceiling (caller limit clamped)
+HYPER_MCP_MAX_BLOB_LIST_PAGE_SIZE=1000    # blob_list page ceiling
+HYPER_MCP_MAX_QUEUE_POLL_BATCH=10000      # queue_poll batch ceiling
+HYPER_MCP_MAX_SEARCH_PAGE_SIZE=10000      # search_query page ceiling
 ```
 
 Without admin trust root, `/register` and `/unregister` return `503 admin_not_configured`.
@@ -232,6 +240,23 @@ HYPER_MCP_ADMIN_AUDIENCE=hyper-mcp
 HYPER_MCP_ADMIN_KID=admin-1
 HYPER_MCP_JWKS_CACHE_SECONDS=300
 ```
+
+### Resource limits
+
+Resource caps are configurable per deployment. Size caps reject oversize
+writes with a 413; page/batch caps clamp the caller's `limit`/`size` down to
+the ceiling. Defaults match the prior hardcoded behavior, so existing
+deployments keep working. Set any of them to tighten for your workload:
+
+- `HYPER_MCP_MAX_CACHE_BYTES` — max bytes for a cache value (413 `VALUE_TOO_LARGE`).
+- `HYPER_MCP_MAX_BLOB_BYTES` — max bytes for a blob payload (413 `BLOB_FILE_TOO_LARGE`).
+- `HYPER_MCP_MAX_DATA_PAGE_SIZE` — `data_find` page ceiling.
+- `HYPER_MCP_MAX_BLOB_LIST_PAGE_SIZE` — `blob_list` page ceiling.
+- `HYPER_MCP_MAX_QUEUE_POLL_BATCH` — `queue_poll` batch ceiling.
+- `HYPER_MCP_MAX_SEARCH_PAGE_SIZE` — `search_query` page ceiling.
+
+Values must be positive integers; a non-integer or non-positive value fails
+startup with a clear config error.
 
 ### Trust mode
 

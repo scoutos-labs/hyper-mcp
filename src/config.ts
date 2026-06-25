@@ -8,6 +8,37 @@ export interface AdminTrustRoot {
 
 export type TrustMode = "local" | "hosted";
 
+/**
+ * Configurable resource limits. All default to the pre-config hardcoded values
+ * so existing deployments keep their behavior. Each cap is the ceiling applied
+ * per request (page/batch caps clamp the caller's limit) or per write (size
+ * caps reject oversize payloads with a 413).
+ */
+export interface ResourceLimits {
+  /** Max bytes for a cache value (reject > cap with 413 VALUE_TOO_LARGE). */
+  maxCacheBytes: number;
+  /** Max bytes for a blob payload (reject > cap with 413 BLOB_FILE_TOO_LARGE). */
+  maxBlobBytes: number;
+  /** Max page size for data_find (caller limit is clamped to this). */
+  maxDataPageSize: number;
+  /** Max page size for blob_list (caller limit is clamped to this). */
+  maxBlobListPageSize: number;
+  /** Max batch size for queue_poll (caller limit is clamped to this). */
+  maxQueuePollBatch: number;
+  /** Max page size for search_query (caller size is clamped to this). */
+  maxSearchPageSize: number;
+}
+
+/** Defaults match the original hardcoded constants in PgliteBackend. */
+export const DEFAULT_LIMITS: ResourceLimits = {
+  maxCacheBytes: 1024 * 1024, // 1 MiB
+  maxBlobBytes: 100 * 1024 * 1024, // 100 MiB
+  maxDataPageSize: 1000,
+  maxBlobListPageSize: 1000,
+  maxQueuePollBatch: 10000,
+  maxSearchPageSize: 10000,
+};
+
 export interface Config {
   pgDir: string;
   readOnly: boolean;
@@ -23,6 +54,8 @@ export interface Config {
   trustModeInferred: boolean;
   /** Whether /metrics is publicly readable (default true). When false, /metrics requires an admin JWT. */
   metricsPublic: boolean;
+  /** Configurable resource limits, applied by the backend adapter. */
+  limits: ResourceLimits;
 }
 
 function parseAdminTrustRoot(env: Record<string, string | undefined>): AdminTrustRoot | null {
@@ -45,6 +78,27 @@ function parseAdminTrustRoot(env: Record<string, string | undefined>): AdminTrus
     issuer,
     audience,
     kid: env.HYPER_MCP_ADMIN_KID,
+  };
+}
+
+function parsePositiveInt(env: Record<string, string | undefined>, key: string, fallback: number): number {
+  const raw = env[key];
+  if (raw === undefined || raw === "") return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) {
+    throw new Error(`${key} must be a positive integer, got: ${JSON.stringify(raw)}`);
+  }
+  return n;
+}
+
+function parseLimits(env: Record<string, string | undefined>): ResourceLimits {
+  return {
+    maxCacheBytes: parsePositiveInt(env, "HYPER_MCP_MAX_CACHE_BYTES", DEFAULT_LIMITS.maxCacheBytes),
+    maxBlobBytes: parsePositiveInt(env, "HYPER_MCP_MAX_BLOB_BYTES", DEFAULT_LIMITS.maxBlobBytes),
+    maxDataPageSize: parsePositiveInt(env, "HYPER_MCP_MAX_DATA_PAGE_SIZE", DEFAULT_LIMITS.maxDataPageSize),
+    maxBlobListPageSize: parsePositiveInt(env, "HYPER_MCP_MAX_BLOB_LIST_PAGE_SIZE", DEFAULT_LIMITS.maxBlobListPageSize),
+    maxQueuePollBatch: parsePositiveInt(env, "HYPER_MCP_MAX_QUEUE_POLL_BATCH", DEFAULT_LIMITS.maxQueuePollBatch),
+    maxSearchPageSize: parsePositiveInt(env, "HYPER_MCP_MAX_SEARCH_PAGE_SIZE", DEFAULT_LIMITS.maxSearchPageSize),
   };
 }
 
@@ -74,6 +128,7 @@ export function loadConfig(env = process.env as Record<string, string | undefine
     trustMode,
     trustModeInferred,
     metricsPublic: env.HYPER_MCP_METRICS_PUBLIC !== "false",
+    limits: parseLimits(env),
   };
 }
 

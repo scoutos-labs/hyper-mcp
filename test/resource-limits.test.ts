@@ -77,7 +77,9 @@ describe("configurable resource limits", () => {
   });
 });
 
-describe("default limits (backward compatibility)", () => {
+describe("default limits (backward compatibility)", { timeout: 30_000 }, () => {
+  // This describe boots a second PgliteBackend mid-test; PGLite's WASM cold-init
+  // can exceed vitest's 5s default on slow CI runners, so allow 30s here.
   it("applies DEFAULT_LIMITS when no limits arg is passed", async () => {
     const d2 = await mkdtemp(join(tmpdir(), "hyper-mcp-limits-default-"));
     const def = new PgliteBackend(d2);

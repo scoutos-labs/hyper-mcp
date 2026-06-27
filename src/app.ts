@@ -4,6 +4,9 @@ import type { Config } from "./config.js";
 import { createServer } from "./server.js";
 import { landingPage } from "./landing.js";
 import { createAuthRoutes } from "./auth-routes.js";
+import { createOpaqueTokenResolver } from "./baas/identity.js";
+import { buildFunctionContext } from "./baas/context.js";
+import { createVmFunctionRuntime, VM_RUNTIME_NAME } from "./baas/runtime.js";
 import { validateAccountJwt, validateAdminJwt, extractBearer } from "./auth.js";
 import { PortError } from "./errors.js";
 import { runWithAuth } from "./auth-context.js";
@@ -22,6 +25,17 @@ export function createApp(config: Config, getPorts: PortsGetter): ReturnType<typ
 
   // Request logging middleware
   app.use(requestLogger());
+
+  // BaaS function runtime. Created once; reused across /u/:accountId/:fn calls.
+  const functionRuntime = createVmFunctionRuntime();
+  if (functionRuntime.name === VM_RUNTIME_NAME) {
+    logger.warn(
+      `BaaS function runtime is "${functionRuntime.name}" — NOT a security barrier; only run code you trust. Use the Daytona adapter for untrusted/multi-tenant functions.`,
+      { runtime: functionRuntime.name },
+    );
+  } else {
+    logger.info("BaaS function runtime", { runtime: functionRuntime.name });
+  }
 
   // Public routes
   app.get("/", (_req: any, res: any) => {
@@ -72,6 +86,54 @@ export function createApp(config: Config, getPorts: PortsGetter): ReturnType<typ
 
   app.post("/register", authRoutes.register);
   app.post("/unregister", authRoutes.unregister);
+
+  // BaaS dynamic endpoint: call an account's authored function with a user
+  // session token (or no token for public functions). This is the surface a
+  // static frontend (e.g. ZenBin) calls directly — no account JWT required.
+  app.post("/u/:accountId/:fn", async (req: any, res: any) => {
+    const timer = startTimer("baas.function");
+    try {
+      const ports = await getPorts();
+      const { accountId, fn } = req.params;
+      const got = await ports.appGetFunction(accountId, fn);
+      if (!got.found || !got.fn) {
+        timer.end({ notFound: true });
+        return res.status(404).json({ error: "FUNCTION_NOT_FOUND", message: `Function ${fn} not found for account ${accountId}` });
+      }
+
+      let user: { id: string; accountId: string } | null = null;
+      if (!got.fn.public) {
+        const cred = req.headers.authorization && String(req.headers.authorization).startsWith("Bearer ")
+          ? String(req.headers.authorization).slice(7)
+          : undefined;
+        const ident = await createOpaqueTokenResolver(ports).resolve(accountId, cred);
+        if (!ident) {
+          timer.end({ authFailed: true });
+          recordAuthFailure();
+          return res.status(401).json({ error: "AUTH_REQUIRED", message: "A valid session token is required for this function" });
+        }
+        user = { id: ident.userId, accountId };
+      }
+
+      const ctx = buildFunctionContext(ports, accountId, user, req.body);
+      try {
+        const result = await functionRuntime.exec(got.fn.body, ctx, config.functionTimeoutMs);
+        timer.end({ accountId, fn, public: got.fn.public, ok: true });
+        return res.status(200).json({ ok: true, result });
+      } catch (e) {
+        const msg = (e as Error).message || "function failed";
+        timer.end({ accountId, fn, error: true });
+        logger.warn("BaaS function failed", { accountId, fn, message: config.trustMode === "hosted" ? "function error" : msg });
+        // In hosted mode do not echo internal error detail to the public surface.
+        return res.status(500).json({ error: "FUNCTION_FAILED", message: config.trustMode === "hosted" ? "function execution failed" : msg });
+      }
+    } catch (e) {
+      const err = e as Error;
+      timer.end({ error: true });
+      logger.error("BaaS endpoint error", { error: err.message, stack: err.stack });
+      return res.status(500).json({ error: "INTERNAL_ERROR", message: "internal error" });
+    }
+  });
 
   // Protected MCP endpoint
   app.post("/mcp", async (req: any, res: any) => {

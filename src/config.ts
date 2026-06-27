@@ -56,6 +56,8 @@ export interface Config {
   metricsPublic: boolean;
   /** Default session TTL in seconds for the auth port (auth_create_session). */
   authSessionTtlSeconds: number;
+  /** Wall-clock timeout (ms) for a single BaaS function call via /u/:accountId/:fn. */
+  functionTimeoutMs: number;
   /** Configurable resource limits, applied by the backend adapter. */
   limits: ResourceLimits;
 }
@@ -131,6 +133,7 @@ export function loadConfig(env = process.env as Record<string, string | undefine
     trustModeInferred,
     metricsPublic: env.HYPER_MCP_METRICS_PUBLIC !== "false",
     authSessionTtlSeconds: parsePositiveInt(env, "HYPER_MCP_AUTH_SESSION_TTL_SECONDS", 86400),
+    functionTimeoutMs: parsePositiveInt(env, "HYPER_MCP_FUNCTION_TIMEOUT_MS", 5000),
     limits: parseLimits(env),
   };
 }

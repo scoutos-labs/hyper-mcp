@@ -108,6 +108,33 @@ export interface SearchPort {
 }
 
 
+// ---------- App (BaaS) Port ----------
+
+export interface AppFunction {
+  name: string;
+  body: string;
+  public: boolean;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AppFunctionPort {
+  appCreateFunction(accountId: string | undefined, name: string, body: string, isPublic: boolean): Promise<{ ok: boolean; name: string; version: number }>;
+  appGetFunction(accountId: string | undefined, name: string): Promise<{ fn: AppFunction | null; found: boolean }>;
+  appListFunctions(accountId: string | undefined): Promise<{ functions: Array<{ name: string; public: boolean; version: number; updatedAt: string }> }>;
+  appDeleteFunction(accountId: string | undefined, name: string): Promise<{ deleted: boolean }>;
+}
+
+export interface AppDataPort {
+  appDataCreate(accountId: string | undefined, userId: string, collection: string, document: Doc): Promise<{ ok: boolean; id: string }>;
+  appDataGet(accountId: string | undefined, userId: string, collection: string, id: string): Promise<{ document: Doc | null; found: boolean }>;
+  appDataFind(accountId: string | undefined, userId: string, collection: string, options?: { filter?: Doc; limit?: number; skip?: number }): Promise<{ documents: Doc[]; total: number }>;
+  appDataUpdate(accountId: string | undefined, userId: string, collection: string, id: string, patch: Doc): Promise<{ ok: boolean; id: string; matchedCount: number }>;
+  appDataDelete(accountId: string | undefined, userId: string, collection: string, id: string): Promise<{ deleted: boolean }>;
+  appDataCount(accountId: string | undefined, userId: string, collection: string, filter?: Doc): Promise<{ count: number }>;
+}
+
 // ---------- Auth Port ----------
 
 export interface AuthUser {
@@ -196,6 +223,6 @@ export interface AccountPort {
 
 // ---------- Ports Bundle ----------
 
-export interface Ports extends DataPort, CachePort, BlobPort, QueuePort, SearchPort, AccountPort, AuthPort {
+export interface Ports extends DataPort, CachePort, BlobPort, QueuePort, SearchPort, AccountPort, AuthPort, AppFunctionPort, AppDataPort {
   close?(): Promise<void>;
 }

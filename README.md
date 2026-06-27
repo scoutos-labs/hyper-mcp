@@ -29,6 +29,7 @@ npm run start:stdio    # stdio MCP transport (local agent)
 | `POST /mcp` | account JWT | MCP streamable HTTP transport |
 | `POST /register` | admin JWT | Register an agent account |
 | `POST /unregister` | admin JWT | Disable an agent account |
+| `POST /u/:accountId/:fn` | user session token (or public) | BaaS dynamic endpoint — call an account's authored function |
 
 ## Auth
 
@@ -217,6 +218,9 @@ curl -X POST https://your-service.onrender.com/mcp \
 | `auth:read` | auth_get_user, auth_find_users, auth_verify_password, auth_verify_session, auth_list_sessions, auth_verify_code, auth_health |
 | `auth:write` | auth_create_user, auth_update_user, auth_set_password, auth_create_session, auth_revoke_session, auth_create_code |
 | `auth:dangerous` | auth_delete_user |
+| `app:read` | app_get_function, app_list_functions |
+| `app:write` | app_register_function |
+| `app:dangerous` | app_delete_function |
 | `accounts:admin` | all of the above (wildcard) |
 
 `{port}:admin` grants all scopes for that port.
@@ -255,6 +259,77 @@ HYPER_MCP_AUTH_SESSION_TTL_SECONDS=86400   # default 1 day
 
 All `auth` data is tenant-isolated by `account_id`; read tools never return
 password hashes, session tokens, or code values.
+
+## BaaS adapter (functions, identity-at-boundary, user-scoped data)
+
+The BaaS adapter lets an account build a web app on hyper-mcp **without writing
+or hosting a separate backend service**. You register JS functions into hyper-mcp
+(Convex-style) and a static frontend (e.g. a ZenBin page) calls them directly at
+`POST /u/:accountId/:fn` with a **user** session token — no account JWT leaves
+the server. This is the last swappable-substrate layer: prototype impls now, prod
+impls behind the same contract later.
+
+### Adapter contracts (prototype vs prod)
+
+| Contract | Prototype (now) | Prod (contract-only) |
+|---|---|---|
+| IdentityResolver | Opaque session token from the auth port (`auth_create_session`) | OIDC JWT verified via JWKS (reuses the multi-provider admin trust machinery) |
+| FunctionRuntime | `node:vm` restricted context — **trusted dev code only** | Daytona sandbox (real isolation for untrusted/multi-tenant code) |
+| User-scoped data (RLS) | App-level `user_id` filter/stamp in SQL via `ctx.db` | Engine-enforced Postgres RLS policies + `SET LOCAL app.user_id` |
+
+> ⚠️ The prototype `FunctionRuntime` (`node:vm`) is **NOT a security barrier** —
+> it is for code the account owner authors in dev. It is escape-able by
+> sophisticated code. Do **not** run third-party/untrusted functions on it in
+> hosted mode; use the Daytona adapter for that. A startup warning is logged.
+
+### Functions
+
+A function is a JS expression evaluating to an async handler with a scoped `ctx`:
+
+```js
+async (ctx) => {
+  // ctx.user = { id, accountId } | null   (null for public functions)
+  // ctx.body = the parsed HTTP request body
+  // ctx.db  = user-scoped data (get/find/create/update/delete/count) — RLS
+  // ctx.auth = createUser/getUser/findUsers/setPassword/verifyPassword/createSession
+  // ctx.kv  = per-user JSON KV (set/get/delete)
+  const u = await ctx.auth.createUser({ email: ctx.body.email });
+  await ctx.auth.setPassword(u.userId, ctx.body.password);
+  const s = await ctx.auth.createSession(u.userId);
+  return { userId: u.userId, token: s.token };
+}
+```
+
+`ctx.db` is structurally scoped to `ctx.user.id` — a function **cannot** address
+another user's rows. Public functions (e.g. `signup`/`login`) run with
+`ctx.user = null` and use `ctx.auth` only; `ctx.db`/`ctx.kv` throw for public
+functions.
+
+### Registering functions (via MCP)
+
+An agent or account calls `app_register_function` (app:write) with the source and
+a `public` flag; `app_list_functions`/`app_get_function` (app:read);
+`app_delete_function` (app:dangerous). Re-registering bumps the version.
+
+### Calling functions (browser/frontend)
+
+```sh
+# public function — no token
+curl -X POST https://your-service.onrender.com/u/myapp/signup \
+  -H "Content-Type: application/json" \
+  -d '{"email":"ada@x.com","password":"pw"}'
+
+# authed function — user session token from signup/login
+curl -X POST https://your-service.onrender.com/u/myapp/listPosts \
+  -H "Authorization: Bearer <session-token>"
+```
+
+```env
+HYPER_MCP_FUNCTION_TIMEOUT_MS=5000   # wall-clock cap per function call
+```
+
+Function source, `app_data`, and `app_functions` are all tenant-isolated by
+`account_id`; `app_data` is additionally scoped by `user_id` (RLS).
 
 ## Configuration
 

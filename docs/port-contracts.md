@@ -123,6 +123,39 @@ adapter conformance suite.
 - hyper-mcp does not send email/SMS; `auth_create_code` returns the code and the
   caller is responsible for delivery.
 
+## app (BaaS) port + dynamic endpoint
+
+**Compatibility behavior (what works now):**
+
+- `app_register_function` / `app_get_function` / `app_list_functions` /
+  `app_delete_function`: function store keyed by `(account_id, name)`; re-register
+  bumps `version`; tenant-isolated by account.
+- `POST /u/:accountId/:fn`: resolves the function by name; if not `public`,
+  resolves the caller via an opaque session token (IdentityResolver prototype)
+  to `(accountId, userId)`; runs the function in the prototype `node:vm` runtime
+  with a scoped `ctx`; returns JSON. Unknown function → 404; authed function
+  without a valid token → 401; runtime error → 500 (no stack leak in hosted mode).
+- `ctx.db` is backed by `app_data(account_id, user_id, collection, id)` — every
+  query is filtered by `account_id AND user_id`, so cross-user access is
+  structurally impossible from a function (prototype RLS).
+- `ctx.auth` proxies the auth port scoped to the route's `accountId`.
+- `ctx.kv` is a per-user JSON namespace over the cache port (`kv:<userId>:<key>`).
+
+**Not a production guarantee (MVP limits):**
+
+- The prototype `FunctionRuntime` (`node:vm`) is **not a security barrier** —
+  trusted dev code only. Untrusted/multi-tenant code requires the Daytona adapter
+  (contract-only). A startup warning is logged.
+- RLS is enforced in application code (the `ctx.db` wrapper), not by the database
+  engine. PGLite does not enforce RLS policies (verified). The prod adapter moves
+  to engine-enforced Postgres RLS.
+- No `ctx.fetch`/network, no filesystem, no env, no timers, no per-function
+  CPU/memory caps beyond the wall-clock `HYPER_MCP_FUNCTION_TIMEOUT_MS`.
+- Async work in a function is not killed mid-flight on timeout; the endpoint
+  returns but the underlying promise may still resolve.
+- Functions are plain JS (no TypeScript transpilation); latest version wins (no
+  aliasing/canary/rollback).
+
 ## Cross-cutting
 
 - **Tenant isolation:** every data-plane table is keyed by `account_id`. This

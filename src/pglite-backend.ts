@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { hashPassword, verifyPassword, randomToken, sha256Hex, generateCode } from "./auth-crypto.js";
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { PGlite } from "@electric-sql/pglite";
@@ -14,7 +15,7 @@ export class PgliteBackend implements Ports {
   private db: PGlite;
   private ready: Promise<void>;
 
-  constructor(private dir: string, private limits: ResourceLimits = DEFAULT_LIMITS) {
+  constructor(private dir: string, private limits: ResourceLimits = DEFAULT_LIMITS, private sessionTtlSeconds: number = 86400) {
     this.db = new PGlite(dir);
     this.ready = this.init();
   }
@@ -143,6 +144,62 @@ export class PgliteBackend implements Ports {
         metadata jsonb,
         created_at timestamptz NOT NULL DEFAULT now()
       );
+
+      CREATE TABLE IF NOT EXISTS auth_users (
+        account_id text NOT NULL,
+        user_id text NOT NULL,
+        email text,
+        username text,
+        phone text,
+        attributes jsonb NOT NULL DEFAULT '{}'::jsonb,
+        status text NOT NULL DEFAULT 'active',
+        created_at timestamptz NOT NULL DEFAULT now(),
+        updated_at timestamptz NOT NULL DEFAULT now(),
+        PRIMARY KEY (account_id, user_id)
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS auth_users_email_uq
+        ON auth_users(account_id, email) WHERE email IS NOT NULL;
+      CREATE UNIQUE INDEX IF NOT EXISTS auth_users_username_uq
+        ON auth_users(account_id, username) WHERE username IS NOT NULL;
+
+      CREATE TABLE IF NOT EXISTS auth_credentials (
+        account_id text NOT NULL,
+        user_id text NOT NULL,
+        method text NOT NULL,
+        hash text NOT NULL,
+        updated_at timestamptz NOT NULL DEFAULT now(),
+        PRIMARY KEY (account_id, user_id, method)
+      );
+
+      CREATE TABLE IF NOT EXISTS auth_sessions (
+        account_id text NOT NULL,
+        token_hash text NOT NULL,
+        user_id text NOT NULL,
+        expires_at timestamptz NOT NULL,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        metadata jsonb,
+        revoked boolean NOT NULL DEFAULT false,
+        PRIMARY KEY (account_id, token_hash)
+      );
+      CREATE INDEX IF NOT EXISTS auth_sessions_user_idx
+        ON auth_sessions(account_id, user_id);
+
+      CREATE TABLE IF NOT EXISTS auth_codes (
+        account_id text NOT NULL,
+        code_id text NOT NULL,
+        channel text NOT NULL,
+        target text NOT NULL,
+        code_hash text NOT NULL,
+        user_id text,
+        expires_at timestamptz NOT NULL,
+        attempts integer NOT NULL DEFAULT 0,
+        max_attempts integer NOT NULL DEFAULT 5,
+        consumed boolean NOT NULL DEFAULT false,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        PRIMARY KEY (account_id, code_id)
+      );
+      CREATE INDEX IF NOT EXISTS auth_codes_target_idx
+        ON auth_codes(account_id, target);
     `);
   }
 
@@ -539,6 +596,226 @@ export class PgliteBackend implements Ports {
   }
   async auditLog(actor: string | null, accountId: string | null, action: string, outcome: string, metadata?: Record<string, unknown>) {
     await this.q(`INSERT INTO account_audit_log(id,actor,account_id,action,outcome,metadata) VALUES($1,$2,$3,$4,$5,$6::jsonb)`, [randomUUID(), actor, accountId, action, outcome, JSON.stringify(metadata ?? null)]);
+  }
+
+  // Auth port
+
+  private toIso(v: unknown): string {
+    if (v instanceof Date) return v.toISOString();
+    return v == null ? "" : String(v);
+  }
+
+  private mapUser(row: any) {
+    return {
+      userId: row.user_id,
+      email: row.email ?? null,
+      username: row.username ?? null,
+      phone: row.phone ?? null,
+      attributes: typeof row.attributes === "string" ? JSON.parse(row.attributes || "{}") : (row.attributes ?? {}),
+      status: row.status,
+      createdAt: this.toIso(row.created_at),
+      updatedAt: this.toIso(row.updated_at),
+    };
+  }
+
+  async authCreateUser(accountId: string | undefined, input: any) {
+    const aid = this.acct(accountId);
+    const userId = randomUUID();
+    const email = input.email ?? null;
+    const username = input.username ?? null;
+    const phone = input.phone ?? null;
+    const attrs = JSON.stringify(input.attributes ?? {});
+    try {
+      await this.q(
+        `INSERT INTO auth_users(account_id,user_id,email,username,phone,attributes) VALUES($1,$2,$3,$4,$5,$6::jsonb)`,
+        [aid, userId, email, username, phone, attrs],
+      );
+    } catch (e) {
+      const msg = (e as Error).message || "";
+      if (/auth_users_email_uq|auth_users_username_uq|unique/i.test(msg)) {
+        throw new PortError("AUTH_DUPLICATE", "A user with that email or username already exists in this account", 409);
+      }
+      throw new PortError("AUTH_CREATE_FAILED", `Failed to create user: ${msg}`, 400);
+    }
+    return { ok: true, userId };
+  }
+
+  async authGetUser(accountId: string | undefined, userId: string) {
+    const aid = this.acct(accountId);
+    const r = await this.q<any>(`SELECT * FROM auth_users WHERE account_id=$1 AND user_id=$2`, [aid, userId]);
+    if (!r.rows[0]) return { user: null, found: false };
+    return { user: this.mapUser(r.rows[0]), found: true };
+  }
+
+  async authFindUsers(accountId: string | undefined, query: { email?: string; username?: string }) {
+    const aid = this.acct(accountId);
+    const conds: string[] = [];
+    const params: unknown[] = [aid];
+    if (query.email) { params.push(query.email); conds.push(`email=$${params.length}`); }
+    if (query.username) { params.push(query.username); conds.push(`username=$${params.length}`); }
+    if (conds.length === 0) return { users: [] };
+    const r = await this.q<any>(`SELECT * FROM auth_users WHERE account_id=$1 AND (${conds.join(" OR ")})`, params);
+    return { users: r.rows.map((row: any) => this.mapUser(row)) };
+  }
+
+  async authUpdateUser(accountId: string | undefined, userId: string, patch: any) {
+    const aid = this.acct(accountId);
+    const got = await this.authGetUser(accountId, userId);
+    if (!got.found || !got.user) return { ok: true, userId, matchedCount: 0 };
+    const email = patch.email !== undefined ? (patch.email ?? null) : got.user.email;
+    const username = patch.username !== undefined ? (patch.username ?? null) : got.user.username;
+    const phone = patch.phone !== undefined ? (patch.phone ?? null) : got.user.phone;
+    const status = patch.status ?? got.user.status;
+    const attributes = patch.attributes
+      ? { ...got.user.attributes, ...patch.attributes }
+      : got.user.attributes;
+    try {
+      const r = await this.q<{ user_id: string }>(
+        `UPDATE auth_users SET email=$3, username=$4, phone=$5, status=$6, attributes=$7::jsonb, updated_at=now() WHERE account_id=$1 AND user_id=$2 RETURNING user_id`,
+        [aid, userId, email, username, phone, status, JSON.stringify(attributes)],
+      );
+      return { ok: true, userId, matchedCount: r.rows.length };
+    } catch (e) {
+      const msg = (e as Error).message || "";
+      if (/auth_users_email_uq|auth_users_username_uq|unique/i.test(msg)) {
+        throw new PortError("AUTH_DUPLICATE", "That email or username is already in use in this account", 409);
+      }
+      throw new PortError("AUTH_UPDATE_FAILED", `Failed to update user: ${msg}`, 400);
+    }
+  }
+
+  async authDeleteUser(accountId: string | undefined, userId: string) {
+    const aid = this.acct(accountId);
+    await this.q(`DELETE FROM auth_credentials WHERE account_id=$1 AND user_id=$2`, [aid, userId]);
+    await this.q(`DELETE FROM auth_sessions WHERE account_id=$1 AND user_id=$2`, [aid, userId]);
+    await this.q(`DELETE FROM auth_codes WHERE account_id=$1 AND user_id=$2`, [aid, userId]);
+    const r = await this.q<{ user_id: string }>(`DELETE FROM auth_users WHERE account_id=$1 AND user_id=$2 RETURNING user_id`, [aid, userId]);
+    return { deleted: r.rows.length > 0 };
+  }
+
+  async authSetPassword(accountId: string | undefined, userId: string, password: string) {
+    const aid = this.acct(accountId);
+    const got = await this.authGetUser(accountId, userId);
+    if (!got.found) throw new PortError("AUTH_USER_NOT_FOUND", `User ${userId} not found`, 404);
+    const hash = await hashPassword(password);
+    await this.q(
+      `INSERT INTO auth_credentials(account_id,user_id,method,hash) VALUES($1,$2,'password',$3) ON CONFLICT(account_id,user_id,method) DO UPDATE SET hash=excluded.hash, updated_at=now()`,
+      [aid, userId, hash],
+    );
+    return { ok: true, userId };
+  }
+
+  async authVerifyPassword(accountId: string | undefined, userId: string, password: string) {
+    const aid = this.acct(accountId);
+    const r = await this.q<{ hash: string }>(`SELECT hash FROM auth_credentials WHERE account_id=$1 AND user_id=$2 AND method='password'`, [aid, userId]);
+    if (!r.rows[0]) return { valid: false };
+    const valid = await verifyPassword(password, r.rows[0].hash);
+    return { valid };
+  }
+
+  async authCreateSession(accountId: string | undefined, userId: string, options: { ttlSeconds?: number; metadata?: Record<string, unknown> } = {}) {
+    const aid = this.acct(accountId);
+    const got = await this.authGetUser(accountId, userId);
+    if (!got.found) throw new PortError("AUTH_USER_NOT_FOUND", `User ${userId} not found`, 404);
+    const ttl = options.ttlSeconds ?? this.sessionTtlSeconds;
+    const token = randomToken(32);
+    const tokenHash = sha256Hex(token);
+    const expiresAt = new Date(Date.now() + ttl * 1000);
+    await this.q(
+      `INSERT INTO auth_sessions(account_id,token_hash,user_id,expires_at,metadata) VALUES($1,$2,$3,$4,$5::jsonb)`,
+      [aid, tokenHash, userId, expiresAt, JSON.stringify(options.metadata ?? null)],
+    );
+    return { token, userId, expiresAt: expiresAt.toISOString() };
+  }
+
+  async authVerifySession(accountId: string | undefined, token: string) {
+    const aid = this.acct(accountId);
+    const tokenHash = sha256Hex(token);
+    const r = await this.q<any>(`SELECT user_id, expires_at, revoked FROM auth_sessions WHERE account_id=$1 AND token_hash=$2`, [aid, tokenHash]);
+    if (!r.rows[0]) return { valid: false, userId: null, expiresAt: null };
+    const row = r.rows[0];
+    const exp = row.expires_at instanceof Date ? row.expires_at : new Date(this.toIso(row.expires_at));
+    if (row.revoked || exp.getTime() <= Date.now()) return { valid: false, userId: null, expiresAt: null };
+    return { valid: true, userId: row.user_id, expiresAt: exp.toISOString() };
+  }
+
+  async authRevokeSession(accountId: string | undefined, token: string) {
+    const aid = this.acct(accountId);
+    const tokenHash = sha256Hex(token);
+    const r = await this.q<{ token_hash: string }>(`UPDATE auth_sessions SET revoked=true WHERE account_id=$1 AND token_hash=$2 RETURNING token_hash`, [aid, tokenHash]);
+    return { revoked: r.rows.length > 0 };
+  }
+
+  async authListSessions(accountId: string | undefined, userId: string) {
+    const aid = this.acct(accountId);
+    const r = await this.q<any>(
+      `SELECT user_id, expires_at, created_at, revoked FROM auth_sessions WHERE account_id=$1 AND user_id=$2 AND revoked=false AND expires_at > now() ORDER BY created_at DESC`,
+      [aid, userId],
+    );
+    return {
+      sessions: r.rows.map((row: any) => ({
+        userId: row.user_id,
+        expiresAt: this.toIso(row.expires_at),
+        createdAt: this.toIso(row.created_at),
+        revoked: !!row.revoked,
+      })),
+    };
+  }
+
+  async authCreateCode(accountId: string | undefined, input: any) {
+    const aid = this.acct(accountId);
+    const channel = input.channel;
+    const target = input.target;
+    if (channel !== "email" && channel !== "sms") throw new PortError("VALIDATION_ERROR", "channel must be 'email' or 'sms'", 400);
+    if (!target) throw new PortError("VALIDATION_ERROR", "target is required", 400);
+    const ttl = input.ttlSeconds ?? 600;
+    const maxAttempts = input.maxAttempts ?? 5;
+    const code = generateCode();
+    const codeId = randomUUID();
+    const codeHash = sha256Hex(code);
+    const expiresAt = new Date(Date.now() + ttl * 1000);
+    // One active code per (account, target): remove any prior codes for this target.
+    await this.q(`DELETE FROM auth_codes WHERE account_id=$1 AND target=$2`, [aid, target]);
+    await this.q(
+      `INSERT INTO auth_codes(account_id,code_id,channel,target,code_hash,user_id,expires_at,max_attempts) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [aid, codeId, channel, target, codeHash, input.userId ?? null, expiresAt, maxAttempts],
+    );
+    return { code, codeId, expiresAt: expiresAt.toISOString() };
+  }
+
+  async authVerifyCode(accountId: string | undefined, query: { channel: string; target: string; code: string }) {
+    const aid = this.acct(accountId);
+    const r = await this.q<any>(
+      `SELECT * FROM auth_codes WHERE account_id=$1 AND target=$2 AND consumed=false ORDER BY created_at DESC LIMIT 1`,
+      [aid, query.target],
+    );
+    const row = r.rows[0];
+    if (!row) return { valid: false, userId: null };
+    const exp = row.expires_at instanceof Date ? row.expires_at : new Date(this.toIso(row.expires_at));
+    if (exp.getTime() <= Date.now()) return { valid: false, userId: null };
+    if (row.attempts >= row.max_attempts) return { valid: false, userId: null };
+
+    const inputHash = sha256Hex(query.code);
+    const expectedHash = row.code_hash;
+    let match = false;
+    if (inputHash.length === expectedHash.length) {
+      const { timingSafeEqual } = await import("node:crypto");
+      match = timingSafeEqual(Buffer.from(inputHash), Buffer.from(expectedHash));
+    }
+
+    if (!match) {
+      await this.q(`UPDATE auth_codes SET attempts = attempts + 1 WHERE account_id=$1 AND code_id=$2`, [aid, row.code_id]);
+      return { valid: false, userId: null };
+    }
+
+    await this.q(`UPDATE auth_codes SET consumed=true WHERE account_id=$1 AND code_id=$2`, [aid, row.code_id]);
+    return { valid: true, userId: row.user_id ?? null };
+  }
+
+  async authHealth(_accountId: string | undefined) {
+    const start = Date.now();
+    await this.q(`SELECT 1`);
+    return { ok: true, latencyMs: Date.now() - start };
   }
 
   async close() { await this.ready; await this.db.close(); }

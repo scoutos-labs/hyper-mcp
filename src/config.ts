@@ -54,6 +54,8 @@ export interface Config {
   trustModeInferred: boolean;
   /** Whether /metrics is publicly readable (default true). When false, /metrics requires an admin JWT. */
   metricsPublic: boolean;
+  /** Default session TTL in seconds for the auth port (auth_create_session). */
+  authSessionTtlSeconds: number;
   /** Configurable resource limits, applied by the backend adapter. */
   limits: ResourceLimits;
 }
@@ -128,6 +130,7 @@ export function loadConfig(env = process.env as Record<string, string | undefine
     trustMode,
     trustModeInferred,
     metricsPublic: env.HYPER_MCP_METRICS_PUBLIC !== "false",
+    authSessionTtlSeconds: parsePositiveInt(env, "HYPER_MCP_AUTH_SESSION_TTL_SECONDS", 86400),
     limits: parseLimits(env),
   };
 }

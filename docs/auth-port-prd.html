@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>hyper-mcp — Auth Port (users, sessions, passwords, one-time codes)</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 960px; margin: 2rem auto; padding: 0 1.25rem; color: #1f2330; background: #fafbff; }
+  h1 { font-size: 1.6rem; border-bottom: 2px solid #4f46e5; padding-bottom: .35rem; }
+  h2 { font-size: 1.2rem; margin-top: 2rem; color: #4f46e5; border-left: 4px solid #4f46e5; padding-left: .5rem; }
+  h3 { font-size: 1.02rem; margin-top: 1.25rem; }
+  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
+  pre { background: #0f1220; color: #eef2ff; padding: .8rem 1rem; border-radius: 8px; overflow-x: auto; }
+  code { background: #eef0fb; padding: .1rem .35rem; border-radius: 4px; }
+  pre code { background: transparent; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: .75rem 0; }
+  th, td { border: 1px solid #d7dbe8; padding: .4rem .6rem; text-align: left; vertical-align: top; }
+  th { background: #eef0fb; }
+  .chip { display: inline-block; padding: .1rem .55rem; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .todo { background: #fff3cd; color: #7a5d00; }
+  .risk-med { color: #9a3412; }
+  .risk-low { color: #065f46; }
+  ul { padding-left: 1.25rem; }
+  .muted { color: #667085; }
+</style>
+</head>
+<body>
+<h1>Auth Port — users, sessions, passwords, one-time codes</h1>
+<p><strong>Slug:</strong> <code>auth-port</code> &nbsp;|&nbsp; <strong>Branch:</strong> <code>feat/auth-port</code> &nbsp;|&nbsp;
+<strong>Inspired by:</strong> Convex Auth Library (session tokens, users, password + email/SMS OTP) &nbsp;|&nbsp;
+<strong>Status:</strong> <span class="chip todo">planned</span></p>
+
+<h2>Summary</h2>
+<p>Add a new <code>auth</code> MCP data-plane port to hyper-mcp, scoped exactly like
+<code>data</code>/<code>cache</code>/<code>blob</code>/<code>queue</code>/<code>search</code>. An account calls
+<code>/mcp</code> with <code>auth:*</code> scopes and manages <strong>its own application's</strong> users,
+credentials, sessions, and one-time sign-in codes. Backed by PGLite and tenant-isolated by
+<code>account_id</code>. This makes "auth like data, blob, cache" literally true: an account can build auth for
+its app on top of hyper-mcp.</p>
+
+<h2>Project-specific definition</h2>
+<p>An <strong>auth port</strong> is a set of MCP tools under the <code>auth</code> scope prefix that manage
+end-user identity and sign-in state for the calling account's own application. It provides four primitives:</p>
+<ul>
+<li><strong>Users</strong> — identity records (email/username/phone + arbitrary attributes), unique within an account.</li>
+<li><strong>Passwords</strong> — salted scrypt hashes stored separately from user records; verify-only.</li>
+<li><strong>Sessions</strong> — opaque, random, url-safe session tokens with expiry; stored as SHA-256 hashes so a DB leak does not expose live sessions.</li>
+<li><strong>One-time codes</strong> — 6-digit email/SMS OTP codes with TTL, attempt cap, and single-use consumption.</li>
+</ul>
+<p><strong>What it is NOT:</strong></p>
+<ul>
+<li>NOT the server's own admin/account auth (control plane — already implemented).</li>
+<li>NOT OAuth/social login flows (deferred — future <code>auth_link_oauth</code> could add this).</li>
+<li>NOT JWT issuance by hyper-mcp; sessions are opaque tokens, not signed JWTs.</li>
+<li>NOT email/SMS delivery; <code>auth_create_code</code> generates and returns the code — delivery is the account's responsibility.</li>
+<li>NOT a login UI or dashboard.</li>
+<li>NOT a change to the tool surface, scope model, or tenant model of existing ports.</li>
+</ul>
+
+<h2>Goals</h2>
+<ul>
+<li>Users: create, get, find by email/username, update attributes, delete (dangerous).</li>
+<li>Passwords: set/verify with scrypt; hashes never returned.</li>
+<li>Sessions: create (issue token), verify (resolve user), revoke, list for a user.</li>
+<li>One-time codes: create (email/SMS), verify (consume), with TTL + attempt cap.</li>
+<li>Tenant isolation by <code>account_id</code>, enforced and tested.</li>
+<li><code>auth:read</code> / <code>auth:write</code> / <code>auth:dangerous</code> scopes; <code>readOnly</code> blocks writes; dangerous blocks delete.</li>
+<li>Conformance harness extended so future adapters must pass the auth suite.</li>
+</ul>
+
+<h2>Non-goals</h2>
+<ul>
+<li>OAuth/OIDC provider linking, social login, magic-link email delivery.</li>
+<li>JWT session tokens (opaque tokens only for MVP).</li>
+<li>Refresh tokens, session rotation, device tracking.</li>
+<li>MFA enrollment flows, passkeys, WebAuthn.</li>
+<li>Password reset email flows (the account orchestrates with <code>auth_create_code</code>).</li>
+<li>Rate limiting / brute-force protection beyond the per-code attempt cap (deployments add their own).</li>
+</ul>
+
+<h2>Open questions / assumptions</h2>
+<table>
+<tr><th>#</th><th>Question</th><th>Resolution</th></tr>
+<tr><td>Q1</td><td>Session token format?</td><td>Opaque 32-byte random <code>base64url</code> string. Store SHA-256 hash; return plaintext only on creation. No JWT.</td></tr>
+<tr><td>Q2</td><td>Password hashing?</td><td>Node built-in <code>crypto.scrypt</code>: 16-byte salt, 32-byte hash, N=16384, r=8, p=1, encoded as <code>scrypt$&lt;salt-b64&gt;$&lt;hash-b64&gt;$&lt;params&gt;</code>. No new dependency.</td></tr>
+<tr><td>Q3</td><td>Email/username uniqueness scope?</td><td>Unique within an account (<code>account_id</code> + field), via partial unique indexes where the field is non-null. Different accounts may reuse the same email.</td></tr>
+<tr><td>Q4</td><td>Do <code>auth_get_user</code>/<code>auth_find_users</code> return credentials?</td><td>No. Never return password hashes, session tokens, or code values. Only user identity + attributes + status.</td></tr>
+<tr><td>Q5</td><td>One code per target, or many?</td><td>One active (non-consumed, non-expired) code per <code>(account_id, target)</code>. <code>auth_create_code</code> replaces any prior active code for that target.</td></tr>
+<tr><td>Q6</td><td>Should <code>auth_verify_session</code> auto-expire?</td><td>Yes: expired sessions are marked invalid (treated as not found). A reaper is not required for MVP; verify checks <code>expires_at &gt; now()</code> and the <code>revoked</code> flag.</td></tr>
+<tr><td>Q7</td><td>Where do credentials live in the schema?</td><td>A separate <code>auth_credentials</code> table keyed by <code>(account_id, user_id, method)</code>, so user record reads can never leak hashes.</td></tr>
+</table>
+
+<h2>Security / privacy considerations</h2>
+<ul>
+<li>Passwords: scrypt-hashed with per-user salt; plaintext never stored or logged; <code>auth_get_user</code> excludes credentials.</li>
+<li>Sessions: store only <code>SHA-256(token)</code>; plaintext token returned once at creation; verify is constant-ish lookup by hash.</li>
+<li>Codes: store <code>SHA-256(code)</code>; TTL default 10m; <code>max_attempts</code> default 5; consumed on success; attempts increment on miss.</li>
+<li>Errors are unauthenticated-impersonation-safe: <code>auth_verify_password</code>/<code>auth_verify_session</code>/<code>auth_verify_code</code> return <code>{ valid: false }</code> rather than leaking which side failed.</li>
+<li>Tenant isolation: every table keyed by <code>account_id</code>; all methods take <code>accountId</code> first arg like other ports.</li>
+<li><code>readOnly</code> blocks all <code>auth:write</code> tools; <code>auth:dangerous</code> (<code>auth_delete_user</code>) requires <code>allowDangerous + confirm</code>.</li>
+<li>No secrets, hashes, tokens, or codes are logged in <code>logger</code> calls — only ids and outcomes.</li>
+</ul>
+
+<h2>Tool → scope mapping</h2>
+<table>
+<tr><th>Tool</th><th>Scope</th><th>Notes</th></tr>
+<tr><td><code>auth_create_user</code></td><td><code>auth:write</code></td><td>email/username unique within account.</td></tr>
+<tr><td><code>auth_get_user</code></td><td><code>auth:read</code></td><td>no credentials returned.</td></tr>
+<tr><td><code>auth_find_users</code></td><td><code>auth:read</code></td><td>by email and/or username.</td></tr>
+<tr><td><code>auth_update_user</code></td><td><code>auth:write</code></td><td>merge attributes / change email/username (uniqueness re-checked).</td></tr>
+<tr><td><code>auth_delete_user</code></td><td><code>auth:dangerous</code></td><td>cascades credentials, sessions, codes; requires <code>confirm</code>.</td></tr>
+<tr><td><code>auth_set_password</code></td><td><code>auth:write</code></td><td>scrypt hash; overwrites prior password.</td></tr>
+<tr><td><code>auth_verify_password</code></td><td><code>auth:read</code></td><td>returns <code>{ valid }</code>; no hash returned.</td></tr>
+<tr><td><code>auth_create_session</code></td><td><code>auth:write</code></td><td>returns <code>{ token, expiresAt }</code>; user must exist.</td></tr>
+<tr><td><code>auth_verify_session</code></td><td><code>auth:read</code></td><td>returns <code>{ valid, userId, expiresAt }</code>.</td></tr>
+<tr><td><code>auth_revoke_session</code></td><td><code>auth:write</code></td><td>by token; idempotent.</td></tr>
+<tr><td><code>auth_list_sessions</code></td><td><code>auth:read</code></td><td>active sessions for a user.</td></tr>
+<tr><td><code>auth_create_code</code></td><td><code>auth:write</code></td><td>channel email|sms, target, ttl, maxAttempts; returns <code>{ code, expiresAt }</code>.</td></tr>
+<tr><td><code>auth_verify_code</code></td><td><code>auth:read</code></td><td>consume; returns <code>{ valid, userId? }</code> when code bound to a user.</td></tr>
+<tr><td><code>auth_health</code></td><td><code>auth:read</code></td><td>latency + counts.</td></tr>
+</table>
+
+<h2>Schema (PGLite)</h2>
+<pre><code>CREATE TABLE IF NOT EXISTS auth_users (
+  account_id text NOT NULL,
+  user_id text NOT NULL,
+  email text,
+  username text,
+  phone text,
+  attributes jsonb NOT NULL DEFAULT '{}'::jsonb,
+  status text NOT NULL DEFAULT 'active',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (account_id, user_id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS auth_users_email_uq
+  ON auth_users(account_id, email) WHERE email IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS auth_users_username_uq
+  ON auth_users(account_id, username) WHERE username IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS auth_credentials (
+  account_id text NOT NULL,
+  user_id text NOT NULL,
+  method text NOT NULL,            -- 'password'
+  hash text NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (account_id, user_id, method)
+);
+
+CREATE TABLE IF NOT EXISTS auth_sessions (
+  account_id text NOT NULL,
+  token_hash text NOT NULL,        -- sha256(token) hex
+  user_id text NOT NULL,
+  expires_at timestamptz NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  metadata jsonb,
+  revoked boolean NOT NULL DEFAULT false,
+  PRIMARY KEY (account_id, token_hash)
+);
+CREATE INDEX IF NOT EXISTS auth_sessions_user_idx
+  ON auth_sessions(account_id, user_id);
+
+CREATE TABLE IF NOT EXISTS auth_codes (
+  account_id text NOT NULL,
+  code_id text NOT NULL,
+  channel text NOT NULL,           -- 'email' | 'sms'
+  target text NOT NULL,            -- email address or phone
+  code_hash text NOT NULL,         -- sha256(code) hex
+  user_id text,                    -- optional binding
+  expires_at timestamptz NOT NULL,
+  attempts integer NOT NULL DEFAULT 0,
+  max_attempts integer NOT NULL DEFAULT 5,
+  consumed boolean NOT NULL DEFAULT false,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (account_id, code_id)
+);
+CREATE INDEX IF NOT EXISTS auth_codes_target_idx
+  ON auth_codes(account_id, target);</code></pre>
+
+<h2>Plan</h2>
+
+<h3>Step 1 — Types, scopes, schema, ports resource</h3>
+<p><span class="chip risk-med">Risk: medium</span> Establishes the contract surface.</p>
+<p><strong>Work:</strong> Add <code>AuthPort</code> to <code>ports/types.ts</code>; add it to the <code>Ports</code>
+bundle. Add the four <code>auth_*</code> tables to <code>pglite-backend.ts</code> <code>init()</code>. Add
+<code>"auth"</code> to the <code>scoutos://ports</code> resource port list. Add <code>auth:read/write/dangerous</code>
+to the valid ports list in <code>auth.ts</code> (<code>VALID_PORTS</code> already includes <code>accounts</code>;
+add <code>auth</code>).</p>
+<p><strong>Acceptance criteria:</strong></p>
+<ul>
+<li><code>Ports</code> includes <code>AuthPort</code>; <code>tsc --noEmit</code> clean (methods unimplemented yet is fine because PgliteBackend <code>implements Ports</code> — must stub all methods).</li>
+<li>Tables exist after <code>init()</code> (smoke: query <code>auth_users</code> succeeds).</li>
+<li><code>scoutos://ports</code> lists <code>auth</code>; <code>isValidScope("auth:read")</code> is true.</li>
+</ul>
+<p><strong>Evidence:</strong> typecheck; new <code>test/auth-port.test.ts</code> schema smoke.</p>
+
+<h3>Step 2 — Users</h3>
+<p><span class="chip risk-med">Risk: medium</span></p>
+<p><strong>Work:</strong> Implement <code>authCreateUser/authGetUser/authFindUsers/authUpdateUser/authDeleteUser</code>
+in PgliteBackend; register the five tools in <code>server.ts</code>. Enforce email/username uniqueness
+(catch unique violation → <code>AUTH_DUPLICATE</code> 409). <code>authDeleteUser</code> cascades
+credentials/sessions/codes (FK ON DELETE CASCADE or explicit deletes).</p>
+<p><strong>Acceptance criteria:</strong></p>
+<ul>
+<li>create → get returns same user (minus credentials); find by email works; update merges attributes.</li>
+<li>Duplicate email within an account → 409 <code>AUTH_DUPLICATE</code>; same email in a different account is allowed.</li>
+<li><code>auth_delete_user</code> requires <code>confirm</code> + <code>allowDangerous</code>; cascades credentials/sessions.</li>
+<li>Tenant isolation: account A cannot see/modify account B's users.</li>
+<li><code>auth_get_user</code> response never includes <code>hash</code>/<code>credentials</code>.</li>
+</ul>
+<p><strong>Evidence:</strong> <code>test/auth-port.test.ts</code> users block; conformance tenant-isolation block.</p>
+
+<h3>Step 3 — Passwords (scrypt)</h3>
+<p><span class="chip risk-med">Risk: medium</span> Security-sensitive.</p>
+<p><strong>Work:</strong> Add scrypt hash/verify helpers (node:crypto). Implement <code>authSetPassword/authVerifyPassword</code>;
+register tools. <code>authSetPassword</code> upserts <code>auth_credentials</code> row with method <code>'password'</code>.
+<code>authVerifyPassword</code> returns <code>{ valid: boolean }</code>; missing user or missing credential → <code>valid:false</code>.</p>
+<p><strong>Acceptance criteria:</strong></p>
+<ul>
+<li>set then verify with correct password → <code>valid:true</code>; wrong password → <code>valid:false</code>.</li>
+<li>verify for a user with no password set → <code>valid:false</code>.</li>
+<li><code>auth_get_user</code> never returns the hash; hash is stored only in <code>auth_credentials</code>.</li>
+<li>Deleting a user removes their credential row.</li>
+</ul>
+<p><strong>Evidence:</strong> <code>test/auth-port.test.ts</code> password block.</p>
+
+<h3>Step 4 — Sessions</h3>
+<p><span class="chip risk-med">Risk: medium</span></p>
+<p><strong>Work:</strong> Implement <code>authCreateSession/authVerifySession/authRevokeSession/authListSessions</code>;
+register tools. Token = 32-byte <code>base64url</code>; store <code>sha256</code> hex; default TTL via
+<code>HYPER_MCP_AUTH_SESSION_TTL_SECONDS</code> (default 86400). Verify hashes input, checks
+<code>revoked=false</code> and <code>expires_at&gt;now()</code>.</p>
+<p><strong>Acceptance criteria:</strong></p>
+<ul>
+<li>create returns <code>{ token, expiresAt }</code>; verify with that token → <code>{ valid:true, userId }</code>.</li>
+<li>verify with wrong/tampered token → <code>valid:false</code>; revoked → <code>valid:false</code>; expired → <code>valid:false</code>.</li>
+<li><code>auth_list_sessions</code> returns active (non-revoked, non-expired) sessions for a user, without token hashes.</li>
+<li>Tenant isolation: account A's token does not verify in account B.</li>
+</ul>
+<p><strong>Evidence:</strong> <code>test/auth-port.test.ts</code> sessions block.</p>
+
+<h3>Step 5 — One-time codes</h3>
+<p><span class="chip risk-med">Risk: medium</span></p>
+<p><strong>Work:</strong> Implement <code>authCreateCode/authVerifyCode</code>; register tools. 6-digit code;
+store <code>sha256</code>; default TTL 600s, max attempts 5. Create replaces any active code for the target.
+Verify looks up active code by <code>(account_id, target)</code>, increments attempts on miss, marks
+<code>consumed</code> on hit. Returns <code>{ valid, userId? }</code>.</p>
+<p><strong>Acceptance criteria:</strong></p>
+<ul>
+<li>create returns <code>{ code, expiresAt }</code>; verify with correct code → <code>valid:true</code> and code consumed.</li>
+<li>second verify of a consumed code → <code>valid:false</code>.</li>
+<li>wrong code <code>max_attempts</code> times → further verify → <code>valid:false</code> (code unusable).</li>
+<li>expired code → <code>valid:false</code>.</li>
+<li>Tenant isolation: account A's code does not verify in account B.</li>
+</ul>
+<p><strong>Evidence:</strong> <code>test/auth-port.test.ts</code> codes block.</p>
+
+<h3>Step 6 — Conformance harness + tests</h3>
+<p><span class="chip risk-low">Risk: low</span></p>
+<p><strong>Work:</strong> Extend <code>test/conformance/ports.conformance.ts</code> with an <code>auth port</code>
+describe block (users CRUD + uniqueness, password set/verify, sessions create/verify/revoke/list, codes
+create/verify/consume, and tenant isolation). Wire it into the existing <code>pglite.test.ts</code> runner
+automatically (it already calls <code>runPortConformanceSuite</code>).</p>
+<p><strong>Acceptance criteria:</strong></p>
+<ul>
+<li>Conformance suite covers all auth behaviors + tenant isolation.</li>
+<li><code>test/conformance/pglite.test.ts</code> passes; total test count increases; no pre-existing test drops.</li>
+<li>No new unhandled rejections.</li>
+</ul>
+<p><strong>Evidence:</strong> <code>npm test</code> output.</p>
+
+<h3>Step 7 — Docs</h3>
+<p><span class="chip risk-low">Risk: low</span></p>
+<p><strong>Work:</strong> Update README: add <code>auth</code> to the port list, add the <code>auth:*</code>
+scope rows to the scope table, add an <strong>Auth port</strong> section describing users/sessions/passwords/codes
+with example tool calls, and document the <code>HYPER_MCP_AUTH_SESSION_TTL_SECONDS</code> env var. Add
+<code>auth</code> to <code>docs/port-contracts.md</code> if present.</p>
+<p><strong>Acceptance criteria:</strong> README scope table includes <code>auth:read/write/dangerous</code>; auth
+section exists; legacy examples unchanged.</p>
+<p><strong>Evidence:</strong> README diff.</p>
+
+<h3>Step 8 — Full validation</h3>
+<p><span class="chip risk-low">Risk: low</span></p>
+<p><strong>Acceptance criteria:</strong> <code>npm run typecheck</code>, <code>npm run build</code>,
+<code>npm test</code> all green; zero unhandled rejections; no test count drop.</p>
+
+<h2>Validation commands</h2>
+<pre><code>npm run typecheck
+npm run build
+npm test</code></pre>
+
+<h2>LLM-as-judge rubric</h2>
+<table>
+<tr><th>Area</th><th>Judgment</th></tr>
+<tr><td>Correctness</td><td>Every tool works; tenant isolation holds; expired/revoked/consumed states invalid.</td></tr>
+<tr><td>Acceptance coverage</td><td>Every Step 1–8 criterion has test or diff evidence.</td></tr>
+<tr><td>Security/privacy</td><td>No hash/token/code ever returned by read tools or logged; verify endpoints return only {valid}; uniqueness enforced; dangerous gated.</td></tr>
+<tr><td>Simplicity</td><td>Mirrors existing port patterns (accountId first arg, tool() helper, scope mapping); no new deps (scrypt is built-in).</td></tr>
+<tr><td>Taste</td><td>Tool names + result shapes consistent with data/cache ports; opaque tokens not over-engineered into JWTs; verify endpoints leak no signal. Target ≥4.</td></tr>
+<tr><td>Originality</td><td>Adapts Convex Auth Library (users + sessions + OTP) to a multi-tenant MCP port primitive, not a copy of Clerk. Target ≥4.</td></tr>
+<tr><td>Maintainability</td><td>AuthPort interface + conformance block make a future adapter implementable.</td></tr>
+<tr><td>Validation</td><td>typecheck + build + full test suite.</td></tr>
+</table>
+
+<h2>Definition of done</h2>
+<ul>
+<li><code>auth</code> port exists with users, passwords, sessions, and one-time codes; all tools wired and scoped.</li>
+<li>Tenant isolation by <code>account_id</code> enforced and covered by conformance + unit tests.</li>
+<li>No credential/token/code ever leaked via read tools or logs.</li>
+<li><code>readOnly</code> blocks writes; <code>auth:dangerous</code> gates <code>auth_delete_user</code>.</li>
+<li><code>npm run typecheck</code>, <code>npm run build</code>, <code>npm test</code> green; test count up.</li>
+<li>README documents the auth port, scopes, and env var.</li>
+</ul>
+
+</body>
+</html>

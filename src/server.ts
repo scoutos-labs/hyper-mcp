@@ -29,7 +29,7 @@ export function createServer(config: Config, getPorts: PortsGetter) {
   const server = new McpServer({ name: "hyper-mcp", version: "0.1.0" }, { capabilities: { logging: {} } });
 
   server.registerResource("ports", "scoutos://ports", { mimeType: "application/json" }, async () => ({
-    contents: [{ uri: "scoutos://ports", text: JSON.stringify({ backend: config.backend, persistentDir: config.pgDir, ports: ["data", "cache", "blob", "queue", "search"], readOnly: config.readOnly, authRequired: config.authRequired, trustMode: config.trustMode }, null, 2) }]
+    contents: [{ uri: "scoutos://ports", text: JSON.stringify({ backend: config.backend, persistentDir: config.pgDir, ports: ["data", "cache", "blob", "queue", "search", "auth"], readOnly: config.readOnly, authRequired: config.authRequired, trustMode: config.trustMode }, null, 2) }]
   }));
 
   function tool(name: string, description: string, inputSchema: any, requiredScope: string, handler: (args: any, _ports: Ports, accountId: string | undefined) => Promise<unknown>, readOnly = false) {
@@ -135,6 +135,22 @@ export function createServer(config: Config, getPorts: PortsGetter) {
   tool("search_query", "Query search index. Supports q string, match_all, match, and term MVP DSL", { index: z.string(), query: z.any().optional(), q: z.string().optional(), from: z.number().int().optional(), size: z.number().int().optional() }, "search:read", async (a, p, accountId) => p.searchQuery(accountId, a.index, a), true);
   tool("search_simple_query", "Simple full text contains search", { index: z.string(), q: z.string(), size: z.number().int().optional(), from: z.number().int().optional() }, "search:read", async (a, p, accountId) => p.searchQuery(accountId, a.index, a), true);
   tool("search_count", "Count search documents", { index: z.string() }, "search:read", async (a, p, accountId) => p.searchCount(accountId, a.index), true);
+
+  // Auth
+  tool("auth_create_user", "Create an application user (email/username unique within the account)", { email: z.string().optional(), username: z.string().optional(), phone: z.string().optional(), attributes: AnyObj.optional() }, "auth:write", async (a, p, accountId) => { assertWrite(config); return p.authCreateUser(accountId, a); });
+  tool("auth_get_user", "Get an application user by id (never returns credentials)", { userId: z.string() }, "auth:read", async (a, p, accountId) => p.authGetUser(accountId, a.userId), true);
+  tool("auth_find_users", "Find application users by email and/or username", { email: z.string().optional(), username: z.string().optional() }, "auth:read", async (a, p, accountId) => p.authFindUsers(accountId, a), true);
+  tool("auth_update_user", "Update an application user (merges attributes)", { userId: z.string(), email: z.string().nullable().optional(), username: z.string().nullable().optional(), phone: z.string().nullable().optional(), attributes: AnyObj.optional(), status: z.string().optional() }, "auth:write", async (a, p, accountId) => { assertWrite(config); return p.authUpdateUser(accountId, a.userId, a); });
+  tool("auth_delete_user", "Delete an application user and all credentials/sessions/codes", { userId: z.string(), confirm: z.boolean().optional() }, "auth:dangerous", async (a, p, accountId) => { assertDangerous(config, a.confirm); return p.authDeleteUser(accountId, a.userId); });
+  tool("auth_set_password", "Set (or replace) a user password (scrypt-hashed)", { userId: z.string(), password: z.string() }, "auth:write", async (a, p, accountId) => { assertWrite(config); return p.authSetPassword(accountId, a.userId, a.password); });
+  tool("auth_verify_password", "Verify a user password; returns { valid } (no hash returned)", { userId: z.string(), password: z.string() }, "auth:read", async (a, p, accountId) => p.authVerifyPassword(accountId, a.userId, a.password), true);
+  tool("auth_create_session", "Issue an opaque session token for a user", { userId: z.string(), ttlSeconds: z.number().int().optional(), metadata: AnyObj.optional() }, "auth:write", async (a, p, accountId) => { assertWrite(config); return p.authCreateSession(accountId, a.userId, { ttlSeconds: a.ttlSeconds, metadata: a.metadata }); });
+  tool("auth_verify_session", "Verify a session token; returns { valid, userId, expiresAt }", { token: z.string() }, "auth:read", async (a, p, accountId) => p.authVerifySession(accountId, a.token), true);
+  tool("auth_revoke_session", "Revoke a session token by value (idempotent)", { token: z.string() }, "auth:write", async (a, p, accountId) => { assertWrite(config); return p.authRevokeSession(accountId, a.token); });
+  tool("auth_list_sessions", "List active (non-revoked, non-expired) sessions for a user", { userId: z.string() }, "auth:read", async (a, p, accountId) => p.authListSessions(accountId, a.userId), true);
+  tool("auth_create_code", "Create a 6-digit one-time code (email|sms) for a target; replaces any prior active code", { channel: z.enum(["email", "sms"]), target: z.string(), userId: z.string().optional(), ttlSeconds: z.number().int().optional(), maxAttempts: z.number().int().optional() }, "auth:write", async (a, p, accountId) => { assertWrite(config); return p.authCreateCode(accountId, a); });
+  tool("auth_verify_code", "Verify and consume a one-time code; returns { valid, userId? }", { channel: z.enum(["email", "sms"]), target: z.string(), code: z.string() }, "auth:read", async (a, p, accountId) => p.authVerifyCode(accountId, a), true);
+  tool("auth_health", "Check auth backend health", {}, "auth:read", async (_a, p, accountId) => p.authHealth(accountId), true);
 
   return server;
 }

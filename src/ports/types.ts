@@ -108,6 +108,66 @@ export interface SearchPort {
 }
 
 
+// ---------- Auth Port ----------
+
+export interface AuthUser {
+  userId: string;
+  email: string | null;
+  username: string | null;
+  phone: string | null;
+  attributes: Record<string, unknown>;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AuthCreateUserInput {
+  email?: string | null;
+  username?: string | null;
+  phone?: string | null;
+  attributes?: Record<string, unknown>;
+}
+
+export interface AuthUpdateUserPatch {
+  email?: string | null;
+  username?: string | null;
+  phone?: string | null;
+  attributes?: Record<string, unknown>;
+  status?: string;
+}
+
+export interface AuthSession {
+  userId: string;
+  expiresAt: string;
+  createdAt: string;
+  revoked: boolean;
+}
+
+export interface AuthCreateCodeInput {
+  channel: "email" | "sms";
+  target: string;
+  userId?: string;
+  ttlSeconds?: number;
+  maxAttempts?: number;
+}
+
+export interface AuthPort {
+  authCreateUser(accountId: string | undefined, input: AuthCreateUserInput): Promise<{ ok: boolean; userId: string }>;
+  authGetUser(accountId: string | undefined, userId: string): Promise<{ user: AuthUser | null; found: boolean }>;
+  authFindUsers(accountId: string | undefined, query: { email?: string; username?: string }): Promise<{ users: AuthUser[] }>;
+  authUpdateUser(accountId: string | undefined, userId: string, patch: AuthUpdateUserPatch): Promise<{ ok: boolean; userId: string; matchedCount: number }>;
+  authDeleteUser(accountId: string | undefined, userId: string): Promise<{ deleted: boolean }>;
+  authSetPassword(accountId: string | undefined, userId: string, password: string): Promise<{ ok: boolean; userId: string }>;
+  authVerifyPassword(accountId: string | undefined, userId: string, password: string): Promise<{ valid: boolean }>;
+  authCreateSession(accountId: string | undefined, userId: string, options?: { ttlSeconds?: number; metadata?: Record<string, unknown> }): Promise<{ token: string; userId: string; expiresAt: string }>;
+  authVerifySession(accountId: string | undefined, token: string): Promise<{ valid: boolean; userId: string | null; expiresAt: string | null }>;
+  authRevokeSession(accountId: string | undefined, token: string): Promise<{ revoked: boolean }>;
+  authListSessions(accountId: string | undefined, userId: string): Promise<{ sessions: AuthSession[] }>;
+  authCreateCode(accountId: string | undefined, input: AuthCreateCodeInput): Promise<{ code: string; codeId: string; expiresAt: string }>;
+  authVerifyCode(accountId: string | undefined, query: { channel: "email" | "sms"; target: string; code: string }): Promise<{ valid: boolean; userId: string | null }>;
+  authHealth(accountId: string | undefined): Promise<{ ok: boolean; latencyMs: number }>;
+}
+
 // ---------- Account Port ----------
 
 export interface AccountInfo {
@@ -136,6 +196,6 @@ export interface AccountPort {
 
 // ---------- Ports Bundle ----------
 
-export interface Ports extends DataPort, CachePort, BlobPort, QueuePort, SearchPort, AccountPort {
+export interface Ports extends DataPort, CachePort, BlobPort, QueuePort, SearchPort, AccountPort, AuthPort {
   close?(): Promise<void>;
 }

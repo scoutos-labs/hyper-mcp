@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>hyper-mcp — Auth Port — Progress</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 920px; margin: 2rem auto; padding: 0 1.25rem; color: #1f2330; background: #fafbff; }
+  h1 { font-size: 1.5rem; border-bottom: 2px solid #4f46e5; padding-bottom: .35rem; }
+  h2 { font-size: 1.15rem; margin-top: 1.5rem; color: #4f46e5; }
+  code { font-family: ui-monospace, SFmono-Regular, Menlo, Consolas, monospace; font-size: 13px; background: #eef0fb; padding: .1rem .35rem; border-radius: 4px; }
+  table { border-collapse: collapse; width: 100%; margin: .75rem 0; }
+  th, td { border: 1px solid #d7dbe8; padding: .4rem .6rem; text-align: left; vertical-align: top; }
+  th { background: #eef0fb; }
+  .chip { display: inline-block; padding: .1rem .55rem; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .do { background: #d1fae5; color: #065f46; }
+  .muted { color: #667085; }
+</style>
+</head>
+<body>
+<h1>Progress — Auth Port</h1>
+<p><strong>Slug:</strong> <code>auth-port</code> &nbsp;|&nbsp; <strong>Branch:</strong> <code>feat/auth-port</code> &nbsp;|&nbsp;
+<strong>Status:</strong> <span class="chip do">complete</span> &nbsp;|&nbsp;
+<strong>PRD:</strong> <code>docs/auth-port-prd.html</code></p>
+
+<h2>Reviewer roles</h2>
+<p class="muted">Subagents unavailable (broken <code>pi-subagents</code> extension path). Planner and LLM-as-judge performed manually by the parent agent per research-plan-loop skill.</p>
+
+<h2>Checklist</h2>
+<table>
+<tr><th>#</th><th>Step</th><th>Risk</th><th>Status</th><th>Evidence</th></tr>
+<tr><td>1</td><td>Types, scopes, schema, ports resource</td><td>medium</td><td><span class="chip do">pass</span></td><td><code>ports/types.ts</code> AuthPort, <code>auth.ts</code> VALID_PORTS, <code>config.ts</code> authSessionTtlSeconds, pglite schema, ports resource; typecheck ✓</td></tr>
+<tr><td>2</td><td>Users (CRUD + uniqueness + tenant isolation)</td><td>medium</td><td><span class="chip do">pass</span></td><td>6 user tests + conformance; AUTH_DUPLICATE 409; tenant isolation</td></tr>
+<tr><td>3</td><td>Passwords (scrypt set/verify)</td><td>medium</td><td><span class="chip do">pass</span></td><td>5 password tests; hash never returned; delete cascades</td></tr>
+<tr><td>4</td><td>Sessions (create/verify/revoke/list)</td><td>medium</td><td><span class="chip do">pass</span></td><td>5 session tests; expired/revoked/tampered invalid; tenant isolation</td></tr>
+<tr><td>5</td><td>One-time codes (create/verify/consume)</td><td>medium</td><td><span class="chip do">pass</span></td><td>7 code tests; max_attempts; replace-on-create; tenant isolation</td></tr>
+<tr><td>6</td><td>Conformance harness + tests</td><td>low</td><td><span class="chip do">pass</span></td><td>auth block + tenant-isolation block in <code>ports.conformance.ts</code>; 163/163</td></tr>
+<tr><td>7</td><td>Docs (README, port-contracts)</td><td>low</td><td><span class="chip do">pass</span></td><td>README port list + scope rows + Auth port section + env var; <code>port-contracts.md</code> auth section</td></tr>
+<tr><td>8</td><td>Full validation</td><td>low</td><td><span class="chip do">pass</span></td><td>typecheck ✓ · build ✓ · test 163/163 ✓</td></tr>
+</table>
+
+<h2>Reviewer findings</h2>
+<p>Impl-review gate (manual): all step acceptance criteria pass with evidence. No blocking findings. Taste 4/5, Originality 4/5 — no repair loop. Security: read tools never return hashes/tokens/codes (asserted); verify endpoints return only {valid}; uniqueness enforced; <code>auth:dangerous</code> gates <code>auth_delete_user</code>; <code>readOnly</code> blocks writes; tenant isolation by account_id covered for users, sessions, and codes.</p>
+
+<h2>Residual risks / follow-ups</h2>
+<ul>
+<li>No rate limiting / brute-force protection beyond the per-code attempt cap; deployments must add throttling.</li>
+<li><code>auth_verify_code</code> looks up by <code>target</code> only (channel is metadata); create replaces all codes for a target regardless of channel. Acceptable for "one active code per (account,target)" but worth noting if multi-channel-per-target is ever needed.</li>
+<li><code>auth_create_code</code> does not validate that a bound <code>userId</code> exists; it is recorded as metadata only. Could add a check in a follow-up.</li>
+<li>No OAuth/OIDC linking, social login, refresh tokens, session rotation, MFA, or passkeys — deferred by design.</li>
+<li>Session tokens are opaque (not signed JWTs); no offline verification.</li>
+</ul>
+
+</body>
+</html>

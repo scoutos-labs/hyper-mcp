@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>hyper-mcp — Multi-Provider Admin Trust Root — Progress</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 920px; margin: 2rem auto; padding: 0 1.25rem; color: #1f2330; background: #fafbff; }
+  h1 { font-size: 1.5rem; border-bottom: 2px solid #4f46e5; padding-bottom: .35rem; }
+  h2 { font-size: 1.15rem; margin-top: 1.5rem; color: #4f46e5; }
+  code { font-family: ui-monospace, SFmono-Regular, Menlo, Consolas, monospace; font-size: 13px; background: #eef0fb; padding: .1rem .35rem; border-radius: 4px; }
+  table { border-collapse: collapse; width: 100%; margin: .75rem 0; }
+  th, td { border: 1px solid #d7dbe8; padding: .4rem .6rem; text-align: left; vertical-align: top; }
+  th { background: #eef0fb; }
+  .chip { display: inline-block; padding: .1rem .55rem; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .do { background: #d1fae5; color: #065f46; }
+  .muted { color: #667085; }
+</style>
+</head>
+<body>
+<h1>Progress — Multi-Provider Admin Trust Root</h1>
+<p><strong>Slug:</strong> <code>convex-multiprovider-auth</code> &nbsp;|&nbsp;
+<strong>Status:</strong> <span class="chip do">complete</span> &nbsp;|&nbsp;
+<strong>PRD:</strong> <code>docs/convex-multiprovider-auth-prd.html</code></p>
+
+<h2>Reviewer roles</h2>
+<p class="muted">Subagents unavailable (broken <code>pi-subagents</code> extension path in this environment). Planner and LLM-as-judge performed manually by the parent agent per research-plan-loop skill.</p>
+
+<h2>Checklist</h2>
+<table>
+<tr><th>#</th><th>Step</th><th>Risk</th><th>Status</th><th>Evidence</th></tr>
+<tr><td>1</td><td>Config: parse multi-provider admin trust root</td><td>medium</td><td><span class="chip do">pass</span></td><td><code>src/config.ts</code>; 11 assertions in <code>admin-multiprovider.test.ts</code> config block</td></tr>
+<tr><td>2</td><td>auth.ts: issuer-routed admin JWT verification</td><td>medium</td><td><span class="chip do">pass</span></td><td><code>src/auth.ts</code>; 10 assertions in verification block</td></tr>
+<tr><td>3</td><td>Call-site gates: auth-routes, http, app</td><td>low</td><td><span class="chip do">pass</span></td><td><code>auth-routes.ts</code>, <code>app.ts</code>, <code>http.ts</code>; existing 503/route tests green</td></tr>
+<tr><td>4</td><td>Tests: multi-provider coverage</td><td>low</td><td><span class="chip do">pass</span></td><td>21 new tests; total 131→152</td></tr>
+<tr><td>5</td><td>Docs: README</td><td>low</td><td><span class="chip do">pass</span></td><td>README Admin trust root section</td></tr>
+<tr><td>6</td><td>Full validation</td><td>low</td><td><span class="chip do">pass</span></td><td>typecheck ✓ · build ✓ · test 152/152 ✓</td></tr>
+</table>
+
+<h2>Reviewer findings</h2>
+<p>Impl-review gate (manual): all step acceptance criteria pass with evidence. No blocking findings. Taste 4/5, Originality 4/5 — no repair loop required. Security: no secrets/keys/tokens logged; ambiguous and duplicate-issuer configs fail at startup; unknown issuer returns 401; zero providers fails closed (503 / stdio refuses).</p>
+
+<h2>Residual risks / follow-ups</h2>
+<ul>
+<li>Module-level <code>adminKeySets</code> map is unbounded across distinct configs (only matters if <code>loadConfig</code> is called repeatedly with different providers, e.g. tests). Production loads config once. Acceptable; revisit only if hot-reload is added.</li>
+<li><code>HYPER_MCP_ADMIN_PROVIDERS</code> JSON is slightly harder to hand-edit than scalar vars; legacy single-provider path retained for single-provider setups.</li>
+<li>Account-side auth is unchanged (already JWKS-capable). A future iteration could allow accounts to authenticate via an OIDC provider's JWT without registering an inline key, but that was a non-goal here.</li>
+</ul>
+
+</body>
+</html>

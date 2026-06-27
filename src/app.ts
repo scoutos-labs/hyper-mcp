@@ -36,7 +36,7 @@ export function createApp(config: Config, getPorts: PortsGetter): ReturnType<typ
       persistentDir: config.pgDir,
       readOnly: config.readOnly,
       authRequired: config.authRequired,
-      adminConfigured: !!config.admin,
+      adminConfigured: config.adminProviders.length > 0,
     });
   });
 
@@ -78,7 +78,7 @@ export function createApp(config: Config, getPorts: PortsGetter): ReturnType<typ
     const timer = startTimer("mcp.request");
 
     if (config.trustMode === "hosted") {
-      if (!config.admin) {
+      if (config.adminProviders.length === 0) {
         timer.end({ authFailed: true, errorCode: "ADMIN_NOT_CONFIGURED", status: 503 });
         recordAuthFailure();
         logger.warn("MCP auth unavailable", { code: "ADMIN_NOT_CONFIGURED", status: 503 });

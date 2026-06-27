@@ -92,6 +92,37 @@ adapter conformance suite.
   autocomplete queries.
 - A production adapter should back search with a real search engine.
 
+## auth port
+
+**Compatibility behavior (what works now):**
+
+- `auth_create_user` / `auth_update_user`: email and username are unique within
+  an account via partial unique indexes; duplicate inserts/updates return
+  `AUTH_DUPLICATE` (409). Different accounts may reuse the same email/username.
+- `auth_set_password` / `auth_verify_password`: passwords are scrypt-hashed with
+  a per-user 16-byte salt (N=16384, r=8, p=1, 32-byte key), stored in a separate
+  `auth_credentials` table. Read tools never return hashes; `auth_verify_password`
+  returns only `{ valid }`.
+- `auth_create_session` / `auth_verify_session` / `auth_revoke_session` /
+  `auth_list_sessions`: sessions are opaque 32-byte `base64url` tokens; only
+  `sha256(token)` is stored. Verify checks `revoked=false` and `expires_at > now()`.
+  `auth_list_sessions` returns active sessions without token hashes.
+- `auth_create_code` / `auth_verify_code`: 6-digit codes stored as `sha256(code)`;
+  one active code per `(account, target)` (create replaces prior); default TTL
+  600s, default max attempts 5; verify consumes on success and increments
+  attempts on miss; once `attempts >= max_attempts` the code is unusable.
+- `auth_delete_user` cascades credentials, sessions, and codes.
+
+**Not a production guarantee (MVP limits):**
+
+- No rate limiting or brute-force protection beyond the per-code attempt cap;
+  deployments must add their own throttling.
+- No OAuth/OIDC linking, social login, magic-link email delivery, refresh
+  tokens, session rotation, MFA, or passkeys (deferred).
+- Session tokens are opaque, not signed JWTs; there is no offline verification.
+- hyper-mcp does not send email/SMS; `auth_create_code` returns the code and the
+  caller is responsible for delivery.
+
 ## Cross-cutting
 
 - **Tenant isolation:** every data-plane table is keyed by `account_id`. This

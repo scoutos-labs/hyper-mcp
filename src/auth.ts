@@ -11,7 +11,7 @@ export interface AuthContext {
   source: "admin" | "account";
 }
 
-const VALID_PORTS = ["data", "cache", "blob", "queue", "search", "accounts"];
+const VALID_PORTS = ["data", "cache", "blob", "queue", "search", "accounts", "auth"];
 const VALID_SCOPES = ["read", "write", "admin", "dangerous"];
 
 export function isValidScope(scope: string): boolean {

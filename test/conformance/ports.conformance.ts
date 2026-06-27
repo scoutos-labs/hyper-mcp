@@ -419,6 +419,105 @@ export function runPortConformanceSuite(hooks: ConformanceHooks): void {
       expect((await ports.searchCount("beta", "idx")).count).toBe(1);
     });
   });
+
+  describe(`${hooks.name}: auth port`, () => {
+    it("creates, gets, finds, updates, and deletes a user (no credentials leaked)", async () => {
+      const created = await ports.authCreateUser(undefined, { email: "ada@x.com", username: "ada", attributes: { role: "admin" } });
+      expect(created.ok).toBe(true);
+
+      const got = await ports.authGetUser(undefined, created.userId);
+      expect(got.found).toBe(true);
+      expect(got.user).toMatchObject({ email: "ada@x.com", username: "ada" });
+      expect(JSON.stringify(got.user)).not.toContain("hash");
+
+      const found = await ports.authFindUsers(undefined, { email: "ada@x.com" });
+      expect(found.users).toHaveLength(1);
+
+      const updated = await ports.authUpdateUser(undefined, created.userId, { attributes: { city: "London" } });
+      expect(updated.matchedCount).toBe(1);
+      const after = await ports.authGetUser(undefined, created.userId);
+      expect(after.user!.attributes).toEqual({ role: "admin", city: "London" });
+
+      expect((await ports.authDeleteUser(undefined, created.userId)).deleted).toBe(true);
+      expect((await ports.authGetUser(undefined, created.userId)).found).toBe(false);
+    });
+
+    it("rejects duplicate email within an account with AUTH_DUPLICATE 409", async () => {
+      await ports.authCreateUser(undefined, { email: "dup@x.com" });
+      await expect(ports.authCreateUser(undefined, { email: "dup@x.com" })).rejects.toMatchObject({ code: "AUTH_DUPLICATE", status: 409 });
+    });
+
+    it("sets and verifies a password (scrypt); no password set => valid:false", async () => {
+      const u = await ports.authCreateUser(undefined, { email: "p@x.com" });
+      expect((await ports.authVerifyPassword(undefined, u.userId, "anything")).valid).toBe(false);
+      await ports.authSetPassword(undefined, u.userId, "correct horse");
+      expect((await ports.authVerifyPassword(undefined, u.userId, "correct horse")).valid).toBe(true);
+      expect((await ports.authVerifyPassword(undefined, u.userId, "wrong")).valid).toBe(false);
+    });
+
+    it("creates, verifies, revokes, and lists sessions", async () => {
+      const u = await ports.authCreateUser(undefined, { email: "s@x.com" });
+      const s = await ports.authCreateSession(undefined, u.userId, { ttlSeconds: 3600 });
+      expect(s.token).toBeTruthy();
+
+      const v = await ports.authVerifySession(undefined, s.token);
+      expect(v).toMatchObject({ valid: true, userId: u.userId });
+
+      const listed = await ports.authListSessions(undefined, u.userId);
+      expect(listed.sessions).toHaveLength(1);
+      expect(JSON.stringify(listed)).not.toContain(s.token);
+
+      expect((await ports.authRevokeSession(undefined, s.token)).revoked).toBe(true);
+      expect((await ports.authVerifySession(undefined, s.token)).valid).toBe(false);
+      expect((await ports.authListSessions(undefined, u.userId)).sessions).toHaveLength(0);
+    });
+
+    it("expired and tampered sessions are invalid", async () => {
+      const u = await ports.authCreateUser(undefined, { email: "e@x.com" });
+      const s = await ports.authCreateSession(undefined, u.userId, { ttlSeconds: -1 });
+      expect((await ports.authVerifySession(undefined, s.token)).valid).toBe(false);
+      expect((await ports.authVerifySession(undefined, "bogus")).valid).toBe(false);
+    });
+
+    it("creates, verifies, and consumes a one-time code; max_attempts disables it", async () => {
+      const c = await ports.authCreateCode(undefined, { channel: "email", target: "u@x.com", maxAttempts: 3 });
+      expect(c.code).toMatch(/^\d{6}$/);
+      expect((await ports.authVerifyCode(undefined, { channel: "email", target: "u@x.com", code: "000000" })).valid).toBe(false);
+      expect((await ports.authVerifyCode(undefined, { channel: "email", target: "u@x.com", code: c.code })).valid).toBe(true);
+      expect((await ports.authVerifyCode(undefined, { channel: "email", target: "u@x.com", code: c.code })).valid).toBe(false);
+    });
+
+    it("create replaces the prior active code for the same target", async () => {
+      const c1 = await ports.authCreateCode(undefined, { channel: "email", target: "r@x.com" });
+      const c2 = await ports.authCreateCode(undefined, { channel: "email", target: "r@x.com" });
+      expect(c1.code).not.toBe(c2.code);
+      expect((await ports.authVerifyCode(undefined, { channel: "email", target: "r@x.com", code: c1.code })).valid).toBe(false);
+      expect((await ports.authVerifyCode(undefined, { channel: "email", target: "r@x.com", code: c2.code })).valid).toBe(true);
+    });
+  });
+
+  describe(`${hooks.name}: tenant isolation — auth port`, () => {
+    it("isolates users, sessions, and codes by account_id", async () => {
+      const a = await ports.authCreateUser("alpha", { email: "shared@x.com" });
+      const b = await ports.authCreateUser("beta", { email: "shared@x.com" });
+      expect(a.userId).not.toBe(b.userId);
+
+      // acct beta cannot read acct alpha's user by id
+      expect((await ports.authGetUser("beta", a.userId)).found).toBe(false);
+      // find is account-scoped
+      expect((await ports.authFindUsers("beta", { email: "shared@x.com" })).users.map((u) => u.userId)).toEqual([b.userId]);
+
+      // sessions are tenant-isolated
+      const s = await ports.authCreateSession("alpha", a.userId);
+      expect((await ports.authVerifySession("beta", s.token)).valid).toBe(false);
+      expect((await ports.authVerifySession("alpha", s.token)).valid).toBe(true);
+
+      // codes are tenant-isolated
+      const c = await ports.authCreateCode("alpha", { channel: "email", target: "ti@x.com" });
+      expect((await ports.authVerifyCode("beta", { channel: "email", target: "ti@x.com", code: c.code })).valid).toBe(false);
+      expect((await ports.authVerifyCode("alpha", { channel: "email", target: "ti@x.com", code: c.code })).valid).toBe(true);
+    });
+  });
 }
 
 function beforeEachAdapter(hooks: ConformanceHooks, setPorts: (p: Ports) => void) {

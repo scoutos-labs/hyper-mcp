@@ -7,6 +7,7 @@ MCP server exposing ScoutOS-style ports to agents, backed by persistent [PGLite]
 - **blob**: text/base64 file storage with metadata (base64 text in PGLite; `blob_sign` returns `pglite://` pseudo URLs for MVP, not externally usable signed URLs)
 - **queue**: topics, subscriptions, poll/ack/nack/seek (lightweight MVP, not Kafka-grade; offsets are allocated atomically; partitions partial)
 - **search**: persistent document indexes with simple contains/match/term query (no scoring or real full-text index)
+- **auth**: application users, scrypt passwords, opaque session tokens, and one-time email/SMS codes (Convex Auth Library analogue; tenant-isolated by account_id)
 
 ## Quick start
 
@@ -241,9 +242,47 @@ curl -X POST https://your-service.onrender.com/mcp \
 | `search:read` | search_health, search_get_doc, search_query, search_simple_query, search_count |
 | `search:write` | search_create_index, search_index_doc, search_delete_doc, search_bulk |
 | `search:dangerous` | search_delete_index |
+| `auth:read` | auth_get_user, auth_find_users, auth_verify_password, auth_verify_session, auth_list_sessions, auth_verify_code, auth_health |
+| `auth:write` | auth_create_user, auth_update_user, auth_set_password, auth_create_session, auth_revoke_session, auth_create_code |
+| `auth:dangerous` | auth_delete_user |
 | `accounts:admin` | all of the above (wildcard) |
 
 `{port}:admin` grants all scopes for that port.
+
+## Auth port
+
+The `auth` port lets an account manage **its own application's** end-user
+identity and sign-in state — users, passwords, sessions, and one-time codes —
+backed by PGLite and scoped like the other ports. This is the Convex Auth
+Library analogue (users + session tokens + password + OTP), exposed as MCP
+tools; it is separate from the server's own admin/account auth.
+
+- **Users** — `auth_create_user`, `auth_get_user`, `auth_find_users`,
+  `auth_update_user`, `auth_delete_user` (dangerous). `email`/`username` are
+  unique within an account. `auth_get_user`/`auth_find_users` never return
+  credentials.
+- **Passwords** — `auth_set_password` (scrypt-hashed with a per-user salt) and
+  `auth_verify_password` (returns `{ valid }`; no hash is ever returned).
+- **Sessions** — `auth_create_session` issues an opaque url-safe token and
+  returns `{ token, expiresAt }`; only a SHA-256 hash of the token is stored,
+  so a DB leak does not expose live sessions. `auth_verify_session` resolves
+  `{ valid, userId, expiresAt }`; `auth_revoke_session` revokes; `auth_list_sessions`
+  lists active sessions (without token hashes).
+- **One-time codes** — `auth_create_code` (channel `email`|`sms`, `target`,
+  optional `userId`, `ttlSeconds`, `maxAttempts`) generates a 6-digit code and
+  stores only its hash; one active code per `(account, target)` (creating
+  replaces any prior). `auth_verify_code` consumes it on success and enforces
+  the attempt cap. Delivery of the code (email/SMS) is the caller's
+  responsibility — hyper-mcp only generates and verifies.
+
+Default session TTL is configurable:
+
+```env
+HYPER_MCP_AUTH_SESSION_TTL_SECONDS=86400   # default 1 day
+```
+
+All `auth` data is tenant-isolated by `account_id`; read tools never return
+password hashes, session tokens, or code values.
 
 ## Configuration
 

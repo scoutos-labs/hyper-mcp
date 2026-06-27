@@ -14,7 +14,7 @@ export async function createPorts(config: Config): Promise<Ports> {
   switch (backend) {
     case "pglite": {
       const { PgliteBackend } = await import("../pglite-backend.js");
-      const instance = new PgliteBackend(config.pgDir, config.limits);
+      const instance = new PgliteBackend(config.pgDir, config.limits, config.authSessionTtlSeconds);
       cachedPorts = instance as unknown as Ports;
       return cachedPorts;
     }

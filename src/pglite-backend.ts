@@ -200,6 +200,28 @@ export class PgliteBackend implements Ports {
       );
       CREATE INDEX IF NOT EXISTS auth_codes_target_idx
         ON auth_codes(account_id, target);
+
+      CREATE TABLE IF NOT EXISTS app_functions (
+        account_id text NOT NULL,
+        name text NOT NULL,
+        body text NOT NULL,
+        public boolean NOT NULL DEFAULT false,
+        version integer NOT NULL DEFAULT 1,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        updated_at timestamptz NOT NULL DEFAULT now(),
+        PRIMARY KEY (account_id, name)
+      );
+
+      CREATE TABLE IF NOT EXISTS app_data (
+        account_id text NOT NULL,
+        user_id text NOT NULL,
+        collection text NOT NULL,
+        id text NOT NULL,
+        document jsonb NOT NULL,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        updated_at timestamptz NOT NULL DEFAULT now(),
+        PRIMARY KEY (account_id, user_id, collection, id)
+      );
     `);
   }
 
@@ -816,6 +838,80 @@ export class PgliteBackend implements Ports {
     const start = Date.now();
     await this.q(`SELECT 1`);
     return { ok: true, latencyMs: Date.now() - start };
+  }
+
+  // App (BaaS) port — stubs (implemented in subsequent steps)
+  async appCreateFunction(accountId: string | undefined, name: string, body: string, isPublic: boolean) {
+    const aid = this.acct(accountId);
+    const prev = await this.q<{ version: number }>(`SELECT version FROM app_functions WHERE account_id=$1 AND name=$2`, [aid, name]);
+    const version = (prev.rows[0]?.version ?? 0) + 1;
+    await this.q(
+      `INSERT INTO app_functions(account_id,name,body,public,version) VALUES($1,$2,$3,$4,$5)
+       ON CONFLICT(account_id,name) DO UPDATE SET body=excluded.body, public=excluded.public, version=excluded.version, updated_at=now()`,
+      [aid, name, body, isPublic, version],
+    );
+    return { ok: true, name, version };
+  }
+  async appGetFunction(accountId: string | undefined, name: string) {
+    const aid = this.acct(accountId);
+    const r = await this.q<any>(`SELECT name, body, public, version, created_at, updated_at FROM app_functions WHERE account_id=$1 AND name=$2`, [aid, name]);
+    if (!r.rows[0]) return { fn: null, found: false };
+    const row = r.rows[0];
+    return { fn: { name: row.name, body: row.body, public: !!row.public, version: row.version, createdAt: this.toIso(row.created_at), updatedAt: this.toIso(row.updated_at) }, found: true };
+  }
+  async appListFunctions(accountId: string | undefined) {
+    const aid = this.acct(accountId);
+    const r = await this.q<any>(`SELECT name, public, version, updated_at FROM app_functions WHERE account_id=$1 ORDER BY name`, [aid]);
+    return { functions: r.rows.map((row: any) => ({ name: row.name, public: !!row.public, version: row.version, updatedAt: this.toIso(row.updated_at) })) };
+  }
+  async appDeleteFunction(accountId: string | undefined, name: string) {
+    const aid = this.acct(accountId);
+    const r = await this.q<{ name: string }>(`DELETE FROM app_functions WHERE account_id=$1 AND name=$2 RETURNING name`, [aid, name]);
+    return { deleted: r.rows.length > 0 };
+  }
+  // User-scoped app data (prototype RLS: every query is filtered by account_id AND user_id;
+  // the ctx.db wrapper bakes in the userId so a function can never address another user's rows).
+  async appDataCreate(accountId: string | undefined, userId: string, collection: string, document: any) {
+    const aid = this.acct(accountId);
+    const id = typeof document._id === "string" ? document._id : randomUUID();
+    const doc = { ...structuredClone(document), _id: id };
+    try {
+      await this.q(`INSERT INTO app_data(account_id,user_id,collection,id,document) VALUES($1,$2,$3,$4,$5::jsonb)`, [aid, userId, collection, id, JSON.stringify(doc)]);
+    } catch (e) {
+      throw new PortError("APP_DATA_DUPLICATE", `Document with _id ${id} already exists`, 409);
+    }
+    return { ok: true, id };
+  }
+  async appDataGet(accountId: string | undefined, userId: string, collection: string, id: string) {
+    const aid = this.acct(accountId);
+    const r = await this.q<{ document: any }>(`SELECT document FROM app_data WHERE account_id=$1 AND user_id=$2 AND collection=$3 AND id=$4`, [aid, userId, collection, id]);
+    return r.rows[0] ? { document: r.rows[0].document, found: true } : { document: null, found: false };
+  }
+  async appDataFind(accountId: string | undefined, userId: string, collection: string, options: { filter?: any; limit?: number; skip?: number } = {}) {
+    const aid = this.acct(accountId);
+    const r = await this.q<{ document: any }>(`SELECT document FROM app_data WHERE account_id=$1 AND user_id=$2 AND collection=$3`, [aid, userId, collection]);
+    const matched = r.rows.map(x => x.document).filter((d: any) => matchFilter(d, options.filter));
+    const total = matched.length;
+    const limit = Math.min(Math.max(options.limit ?? 50, 1), 1000);
+    const skip = options.skip ?? 0;
+    return { documents: matched.slice(skip, skip + limit), total };
+  }
+  async appDataUpdate(accountId: string | undefined, userId: string, collection: string, id: string, patch: any) {
+    const aid = this.acct(accountId);
+    const got = await this.appDataGet(accountId, userId, collection, id);
+    if (!got.found || !got.document) return { ok: true, id, matchedCount: 0 };
+    const { doc, modified } = applyUpdate(got.document, patch);
+    await this.q(`UPDATE app_data SET document=$5::jsonb, updated_at=now() WHERE account_id=$1 AND user_id=$2 AND collection=$3 AND id=$4`, [aid, userId, collection, id, JSON.stringify(doc)]);
+    return { ok: true, id, matchedCount: modified ? 1 : 0 };
+  }
+  async appDataDelete(accountId: string | undefined, userId: string, collection: string, id: string) {
+    const aid = this.acct(accountId);
+    const r = await this.q<{ id: string }>(`DELETE FROM app_data WHERE account_id=$1 AND user_id=$2 AND collection=$3 AND id=$4 RETURNING id`, [aid, userId, collection, id]);
+    return { deleted: r.rows.length > 0 };
+  }
+  async appDataCount(accountId: string | undefined, userId: string, collection: string, filter?: any) {
+    const f = await this.appDataFind(accountId, userId, collection, { filter, limit: 1000 });
+    return { count: f.total };
   }
 
   async close() { await this.ready; await this.db.close(); }

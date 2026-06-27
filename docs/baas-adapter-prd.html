@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>hyper-mcp — BaaS Adapter (functions, identity-at-boundary, user-scoped data)</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 960px; margin: 2rem auto; padding: 0 1.25rem; color: #1f2330; background: #fafbff; }
+  h1 { font-size: 1.55rem; border-bottom: 2px solid #4f46e5; padding-bottom: .35rem; }
+  h2 { font-size: 1.15rem; margin-top: 1.75rem; color: #4f46e5; border-left: 4px solid #4f46e5; padding-left: .5rem; }
+  h3 { font-size: 1.02rem; margin-top: 1.2rem; }
+  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
+  pre { background: #0f1220; color: #eef2ff; padding: .8rem 1rem; border-radius: 8px; overflow-x: auto; }
+  code { background: #eef0fb; padding: .1rem .35rem; border-radius: 4px; }
+  pre code { background: transparent; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: .75rem 0; }
+  th, td { border: 1px solid #d7dbe8; padding: .4rem .6rem; text-align: left; vertical-align: top; }
+  th { background: #eef0fb; }
+  .chip { display: inline-block; padding: .1rem .55rem; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .todo { background: #fff3cd; color: #7a5d00; }
+  .warn { background: #fee2e2; color: #991b1b; }
+  ul { padding-left: 1.25rem; }
+  .muted { color: #667085; }
+</style>
+</head>
+<body>
+<h1>BaaS Adapter — functions, identity-at-boundary, user-scoped data</h1>
+<p><strong>Slug:</strong> <code>baas-adapter</code> &nbsp;|&nbsp; <strong>Branch:</strong> <code>feat/baas-adapter</code> (off <code>feat/auth-port</code>) &nbsp;|&nbsp;
+<strong>Status:</strong> <span class="chip todo">planned</span></p>
+
+<h2>North star</h2>
+<p>hyper-mcp is a swappable-substrate BaaS spoken over MCP: every capability lives behind a stable
+adapter contract so a user or agent builds an app against the contract and never commits to a backend
+vendor — prototype on lightweight local implementations, swap to production implementations without
+rewriting the app. Data/cache/blob/queue/search already follow this; control-plane auth and the auth port
+follow it; <strong>this PRD makes the last layer — BaaS itself — follow the same principle</strong>:
+end-user identity at the boundary, row-level user-scoped data, and running the app's own functions.</p>
+
+<p>Result: an agent or user can build a web app on hyper-mcp (frontend on ZenBin) <strong>without writing or
+hosting a separate backend service</strong>. You host hyper-mcp; you register functions into it, Convex-style.
+When you outgrow the prototype substrate, you swap adapters, not the app.</p>
+
+<h2>Project-specific definition</h2>
+<p><strong>BaaS adapter</strong> = three contracts plus a dynamic HTTP endpoint:</p>
+<ul>
+<li><strong>IdentityResolver</strong> — resolves a request credential to <code>{ accountId, userId | null }</code>.</li>
+<li><strong>FunctionRuntime</strong> — executes an account's authored function with a scoped <code>ctx</code> and returns JSON.</li>
+<li><strong>User-scoped data</strong> — <code>ctx.db</code> that is auto-scoped to the verified user (the RLS surface).</li>
+<li><strong>Dynamic endpoint</strong> — <code>POST /u/:accountId/:fn</code> wires resolver → function → runtime, with <code>public</code> vs <code>authed</code> functions.</li>
+</ul>
+<p><strong>What it is NOT (this cycle):</strong> the production adapters are <em>contract-only</em> here —
+external-Postgres engine RLS, Daytona function sandbox, and OIDC JWT boundary auth are defined as the
+swappable prod impls but <em>not implemented</em>. This cycle ships the <strong>prototype impls</strong> end-to-end.</p>
+
+<h2>Research findings (gating)</h2>
+<ol>
+<li><strong>PGLite does NOT enforce RLS policies.</strong> Probed directly: <code>ENABLE/FORCE ROW LEVEL SECURITY</code> + <code>CREATE POLICY … USING (owner = current_setting('app.user_id', true))</code> is accepted and stored (<code>relrowsecurity=true, relforcerowsecurity=true</code>), but queries still return all rows regardless of the setting. Conclusion: the prototype substrate cannot do engine RLS. <strong>Prototype enforces user-scoping in application code</strong> (the <code>ctx.db</code> capability wrapper stamps/filters <code>user_id</code> in SQL). The prod adapter (external Postgres) moves to engine-enforced RLS with <code>SET LOCAL app.user_id</code>. Same contract, different enforcement.</li>
+<li><strong>Prototype function runtime = <code>node:vm</code> with a hard-restricted context.</strong> <code>quickjs-emscripten</code> v0.32 has a fiddly split API not worth the cycle; <code>isolated-vm</code> needs native build. <code>node:vm</code> is zero-dep and adequate for the prototype threat model (code authored by the account owner in dev). It is <strong>explicitly not a security boundary</strong> — loud warning in code, startup log, and docs; untrusted/multi-tenant code uses the <strong>Daytona</strong> <code>FunctionRuntime</code> (prod, contract-only here).</li>
+</ol>
+
+<h2>Adapter contract → prototype vs prod</h2>
+<table>
+<tr><th>Contract</th><th>Prototype impl (this cycle)</th><th>Prod impl (contract-only)</th></tr>
+<tr><td>IdentityResolver</td><td>Opaque session token from the auth port (<code>authVerifySession</code>)</td><td>OIDC JWT verified via JWKS (reuses the multi-provider admin trust <code>jose</code> machinery)</td></tr>
+<tr><td>FunctionRuntime</td><td><code>node:vm</code> restricted context (trusted dev code only)</td><td>Daytona sandbox (real isolation for untrusted code)</td></tr>
+<tr><td>User-scoped data (RLS)</td><td>App-level <code>user_id</code> filter/stamp in SQL via <code>ctx.db</code> wrapper; dedicated <code>app_data</code> table</td><td>Engine-enforced Postgres RLS policies + <code>SET LOCAL app.user_id</code></td></tr>
+<tr><td>Dynamic endpoint</td><td><code>POST /u/:accountId/:fn</code> in <code>app.ts</code></td><td>same contract; resolver/runtime backed by prod impls</td></tr>
+</table>
+
+<h2>Function model</h2>
+<p>A function is authored as a JS expression evaluating to an async handler:</p>
+<pre><code>async (ctx) => {
+  // ctx.user = { id, accountId } | null   (null for public functions)
+  // ctx.db  = user-scoped data (get/find/create/update/delete/count)
+  // ctx.auth = createUser/verifyPassword/createSession/getUser/findUsers
+  // ctx.kv  = per-user JSON KV (set/get/delete) backed by the cache port
+  const u = await ctx.auth.createUser({ email: ctx.body.email });
+  await ctx.auth.setPassword(u.userId, ctx.body.password);   // note: see ctx shape
+  const s = await ctx.auth.createSession(u.userId);
+  return { userId: u.userId, token: s.token };
+}</code></pre>
+<p class="muted">The runtime evals the source to obtain the handler and calls it with <code>ctx</code>. The HTTP request
+body is exposed as <code>ctx.body</code>. Functions return JSON-serializable values; non-serializable returns are rejected.</p>
+
+<h2>Goals</h2>
+<ul>
+<li>Define <code>IdentityResolver</code>, <code>FunctionRuntime</code>, and user-scoped data as adapter contracts with prototype impls.</li>
+<li>Function store: register/get/list/delete functions (JS source + <code>public</code> flag), tenant-isolated by account.</li>
+<li><code>POST /u/:accountId/:fn</code>: resolve identity (skip if public), run function with scoped <code>ctx</code>, return JSON.</li>
+<li>User-scoped data: <code>ctx.db</code> enforces <code>user_id</code> on every read/write; cross-user reads impossible from a function.</li>
+<li>Function-management MCP tools so an agent can register functions.</li>
+<li>End-to-end test: signup → login → authed profile/posts with RLS isolation between two users.</li>
+</ul>
+
+<h2>Non-goals (this cycle)</h2>
+<ul>
+<li>Prod adapters: external Postgres engine RLS, Daytona runtime, OIDC JWT boundary (contract-only).</li>
+<li>Function versioning/rollbacks, canary, aliasing (store <code>version</code> but latest wins for MVP).</li>
+<li>Network access from functions (<code>ctx.fetch</code>), cron, webhooks, file system, env vars.</li>
+<li>Deno/TypeScript transpilation — functions are plain JS.</li>
+<li>Per-function resource caps (CPU/memory/time) beyond a wall-clock timeout.</li>
+<li>A function marketplace or cross-account sharing.</li>
+</ul>
+
+<h2>Schema (PGLite, additive)</h2>
+<pre><code>CREATE TABLE IF NOT EXISTS app_functions (
+  account_id text NOT NULL,
+  name text NOT NULL,
+  body text NOT NULL,            -- JS expression evaluating to async (ctx) => {...}
+  public boolean NOT NULL DEFAULT false,
+  version integer NOT NULL DEFAULT 1,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (account_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS app_data (
+  account_id text NOT NULL,
+  user_id text NOT NULL,
+  collection text NOT NULL,
+  id text NOT NULL,
+  document jsonb NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (account_id, user_id, collection, id)
+);</code></pre>
+<p class="muted"><code>app_data</code> is intentionally separate from <code>data_docs</code>: account-level data (via <code>/mcp</code> data:* tools) and user-level data (via functions' <code>ctx.db</code>) are distinct. The wrapper enforces <code>user_id</code> in every query (prototype RLS). The existing data port is untouched.</p>
+
+<h2>Security / privacy</h2>
+<ul>
+<li><strong>Prototype runtime is NOT a security boundary.</strong> <code>node:vm</code> restricted context is for code the account owner authored (dev/trusted). Startup logs and docs say so. Untrusted/multi-tenant requires the Daytona adapter. Do not run third-party functions on the prototype runtime in hosted mode.</li>
+<li><code>ctx.db</code> is the only data path from functions; it is impossible to address another user's <code>user_id</code> — the wrapper injects <code>ctx.user.id</code> and ignores any caller-supplied user id. Cross-user reads/writes are structurally prevented at the wrapper, not via a policy that can be misconfigured.</li>
+<li><code>ctx.auth</code> methods run with the route's <code>accountId</code>; a function cannot touch another account's users/sessions.</li>
+<li>Public functions (e.g. <code>login</code>) run with <code>ctx.user = null</code> but still only affect the route's account.</li>
+<li>Account JWTs are never exposed to functions or browsers; only opaque session tokens leave the server, and only via functions that choose to return them.</li>
+<li>Function source is stored as text; secrets/keys are never injected into <code>ctx</code>. No <code>process</code>, <code>require</code>, <code>env</code>, <code>Buffer</code>, or network in the sandbox global.</li>
+<li>Wall-clock timeout per function call; uncaught errors return a generic 500 to the caller (no stack trace leak by default in hosted mode).</li>
+</ul>
+
+<h2>Plan</h2>
+
+<h3>Step 1 — Contracts, schema, Ports surface</h3>
+<p><span class="chip warn">Risk: medium</span></p>
+<p><strong>Work:</strong> Add <code>app_functions</code> + <code>app_data</code> tables. Add <code>AppFunctionPort</code> + <code>AppDataPort</code> methods to <code>Ports</code>. Add <code>app</code> to <code>VALID_PORTS</code>. Define <code>IdentityResolver</code> + <code>FunctionRuntime</code> interfaces in <code>src/baas/types.ts</code>. Stub backend methods.</p>
+<p><strong>Acceptance:</strong> <code>tsc --noEmit</code> clean; <code>isValidScope("app:read")</code> true; tables created.</p>
+
+<h3>Step 2 — Function store + management MCP tools</h3>
+<p><span class="chip warn">Risk: medium</span></p>
+<p><strong>Work:</strong> Implement <code>appCreateFunction/appGetFunction/appListFunctions/appDeleteFunction</code> in PgliteBackend. Register tools: <code>app_register_function</code> (app:write), <code>app_get_function</code> (app:read), <code>app_list_functions</code> (app:read), <code>app_delete_function</code> (app:dangerous).</p>
+<p><strong>Acceptance:</strong> register/get/list/delete work; tenant-isolated by account; <code>app:*</code> scopes grantable via <code>/register</code>.</p>
+
+<h3>Step 3 — User-scoped data (app_data) + capability wrapper</h3>
+<p><span class="chip warn">Risk: medium</span></p>
+<p><strong>Work:</strong> Implement <code>appDataCreate/Get/Find/Update/Delete/Count</code> in PgliteBackend (all filter by <code>account_id AND user_id</code>). Build <code>UserScopedDb</code> wrapper that bakes in <code>accountId</code> + <code>userId</code> and exposes <code>get/find/create/update/delete/count</code>.</p>
+<p><strong>Acceptance:</strong> cross-user reads/writes impossible; create stamps <code>user_id</code>; find auto-filters; tenant + user isolation.</p>
+
+<h3>Step 4 — IdentityResolver (opaque token) + ctx.auth + ctx.kv</h3>
+<p><span class="chip warn">Risk: medium</span></p>
+<p><strong>Work:</strong> <code>OpaqueTokenResolver</code> using <code>ports.authVerifySession(accountId, token)</code>. Build <code>ctx.auth</code> (createUser/setPassword/verifyPassword/createSession/getUser/findUsers, scoped to accountId) and <code>ctx.kv</code> (per-user cache namespace via the cache port with user-scoped keys).</p>
+<p><strong>Acceptance:</strong> resolver returns userId for valid session, null for invalid/expired; ctx.auth works for public functions; ctx.kv is per-user.</p>
+
+<h3>Step 5 — FunctionRuntime (node:vm) + ctx assembly</h3>
+<p><span class="chip warn">Risk: medium</span> Security-sensitive even for prototype.</p>
+<p><strong>Work:</strong> <code>VmFunctionRuntime</code>: <code>vm.createContext</code> with a frozen sandbox exposing only <code>ctx</code>, <code>JSON</code>, <code>Math</code>, <code>Date</code>, <code>Promise</code>, <code>console</code> (no <code>require</code>/<code>process</code>/<code>globalThis</code>/<code>Buffer</code>). Eval source → handler → <code>await handler(ctx)</code>. Wall-clock timeout. Loud "PROTOTYPE ONLY" warning + startup log line naming the runtime impl.</p>
+<p><strong>Acceptance:</strong> a trivial function returns JSON; a function referencing <code>process</code>/<code>require</code> throws; timeout aborts long functions; result is JSON-serializable or rejected.</p>
+
+<h3>Step 6 — Dynamic endpoint POST /u/:accountId/:fn</h3>
+<p><span class="chip warn">Risk: medium</span></p>
+<p><strong>Work:</strong> In <code>app.ts</code>, add the route. Load function (404 if missing). If not <code>public</code>, resolve identity from <code>Authorization: Bearer &lt;sessionToken&gt;</code> (401 if missing/invalid). Build <code>ctx</code> (with <code>ctx.user</code> and <code>ctx.body = req.body</code>). Run via runtime. Return JSON. Map runtime errors to 500 without stack leak (hosted) / with stack (local).</p>
+<p><strong>Acceptance:</strong> public function callable with no token; authed function 401 without token, 200 with valid token; unknown function 404.</p>
+
+<h3>Step 7 — End-to-end tests</h3>
+<p><span class="chip todo">Risk: low</span></p>
+<p><strong>Work:</strong> <code>test/baas.test.ts</code>: register <code>signup</code> (public), <code>login</code> (public), <code>me</code> (authed, returns ctx.user + a ctx.db post), <code>posts</code> (authed, lists ctx.db posts). HTTP flow: signup → token; create post as user A; user B's <code>posts</code> cannot see A's post (RLS). Unknown fn → 404; authed without token → 401; function that touches <code>process</code> → 500.</p>
+<p><strong>Acceptance:</strong> all branches pass; RLS isolation proven end-to-end.</p>
+
+<h3>Step 8 — Docs + full validation</h3>
+<p><span class="chip todo">Risk: low</span></p>
+<p><strong>Work:</strong> README: BaaS adapter section + <code>app:*</code> scope rows + <code>/u/:accountId/:fn</code> endpoint + prototype/prod adapter table + the runtime security warning. <code>port-contracts.md</code> app section. Run typecheck/build/test.</p>
+<p><strong>Acceptance:</strong> typecheck + build + test green; README + port-contracts document the contract and the prototype-runtime caveat.</p>
+
+<h2>Validation commands</h2>
+<pre><code>npm run typecheck
+npm run build
+npm test</code></pre>
+
+<h2>LLM-as-judge rubric</h2>
+<table>
+<tr><th>Area</th><th>Judgment</th></tr>
+<tr><td>Correctness</td><td>signup→login→authed flow works; RLS isolation holds; public vs authed enforced.</td></tr>
+<tr><td>Acceptance coverage</td><td>Every Step 1–8 criterion has test or diff evidence.</td></tr>
+<tr><td>Security/privacy</td><td>ctx.db cannot address another user; no Node globals in sandbox; account JWT never exposed; runtime warning loud; prod gap explicit.</td></tr>
+<tr><td>Simplicity</td><td>Adapter contracts are minimal; app_data separate from data_docs avoids touching the existing data port; no new deps.</td></tr>
+<tr><td>Taste</td><td>Function DX feels like Convex (async handler + ctx); endpoint naming clear; honest about prototype limits. Target ≥4.</td></tr>
+<tr><td>Originality</td><td>Agent-operable, MCP-native, swappable-substrate BaaS — distinct from Convex. Target ≥4.</td></tr>
+<tr><td>Maintainability</td><td>Contracts make prod adapters (Postgres RLS / Daytona / OIDC) implementable without changing functions or endpoints.</td></tr>
+<tr><td>Validation</td><td>typecheck + build + full test suite.</td></tr>
+</table>
+
+<h2>Definition of done</h2>
+<ul>
+<li><code>IdentityResolver</code>, <code>FunctionRuntime</code>, user-scoped data, and <code>POST /u/:accountId/:fn</code> exist with prototype impls.</li>
+<li>Function store + management tools work and are tenant-isolated.</li>
+<li><code>ctx.db</code> structurally prevents cross-user access; proven by an end-to-end RLS test.</li>
+<li>Public vs authed functions enforced; opaque session tokens accepted at the boundary.</li>
+<li>Prototype-runtime security caveat is loud in code, startup log, and docs.</li>
+<li><code>npm run typecheck</code>, <code>npm run build</code>, <code>npm test</code> green; test count up.</li>
+<li>README + port-contracts document the contract, the endpoint, and the prod adapter path.</li>
+</ul>
+
+</body>
+</html>

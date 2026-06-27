@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>hyper-mcp — BaaS Adapter — Progress</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 920px; margin: 2rem auto; padding: 0 1.25rem; color: #1f2330; background: #fafbff; }
+  h1 { font-size: 1.5rem; border-bottom: 2px solid #4f46e5; padding-bottom: .35rem; }
+  h2 { font-size: 1.15rem; margin-top: 1.5rem; color: #4f46e5; }
+  code { font-family: ui-monospace, SFmono-Regular, Menlo, Consolas, monospace; font-size: 13px; background: #eef0fb; padding: .1rem .35rem; border-radius: 4px; }
+  table { border-collapse: collapse; width: 100%; margin: .75rem 0; }
+  th, td { border: 1px solid #d7dbe8; padding: .4rem .6rem; text-align: left; vertical-align: top; }
+  th { background: #eef0fb; }
+  .chip { display: inline-block; padding: .1rem .55rem; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .do { background: #d1fae5; color: #065f46; }
+  .muted { color: #667085; }
+</style>
+</head>
+<body>
+<h1>Progress — BaaS Adapter</h1>
+<p><strong>Slug:</strong> <code>baas-adapter</code> &nbsp;|&nbsp; <strong>Branch:</strong> <code>feat/baas-adapter</code> &nbsp;|&nbsp;
+<strong>Status:</strong> <span class="chip do">complete</span> &nbsp;|&nbsp; <strong>PRD:</strong> <code>docs/baas-adapter-prd.html</code></p>
+<p class="muted">Subagents unavailable (broken pi-subagents extension path). Planner and LLM-as-judge performed manually per research-plan-loop skill.</p>
+<table>
+<tr><th>#</th><th>Step</th><th>Status</th><th>Evidence</th></tr>
+<tr><td>1</td><td>Contracts, schema, Ports surface</td><td><span class="chip do">pass</span></td><td><code>src/baas/types.ts</code>; <code>app</code> in VALID_PORTS; <code>app_functions</code>+<code>app_data</code> tables; stubs; typecheck ✓</td></tr>
+<tr><td>2</td><td>Function store + management tools</td><td><span class="chip do">pass</span></td><td>PgliteBackend impls; 4 MCP tools (app_register/get/list/delete); version bump; tenant-isolated</td></tr>
+<tr><td>3</td><td>User-scoped data (app_data) + ctx.db</td><td><span class="chip do">pass</span></td><td>appData* methods filter by account_id AND user_id; cross-user impossible</td></tr>
+<tr><td>4</td><td>IdentityResolver + ctx.auth + ctx.kv</td><td><span class="chip do">pass</span></td><td><code>OpaqueTokenResolver</code> via authVerifySession; <code>buildFunctionContext</code> scoped capabilities</td></tr>
+<tr><td>5</td><td>FunctionRuntime (node:vm) + ctx</td><td><span class="chip do">pass</span></td><td><code>VmFunctionRuntime</code> frozen sandbox; no process/require; timeout; loud warning + startup log</td></tr>
+<tr><td>6</td><td>Dynamic endpoint POST /u/:accountId/:fn</td><td><span class="chip do">pass</span></td><td>wired in app.ts; public vs authed; 404/401/500 mapping; no stack leak in hosted</td></tr>
+<tr><td>7</td><td>End-to-end tests</td><td><span class="chip do">pass</span></td><td><code>test/baas.test.ts</code> 11 tests; signup→login→authed; RLS isolation; sandbox; store</td></tr>
+<tr><td>8</td><td>Docs + full validation</td><td><span class="chip do">pass</span></td><td>README BaaS section + endpoint + scopes + env var; port-contracts app section; typecheck ✓ · build ✓ · 174/174 ✓</td></tr>
+</table>
+
+<h2>Research findings (gating)</h2>
+<ul>
+<li><strong>PGLite does not enforce RLS policies</strong> — <code>ENABLE/FORCE ROW LEVEL SECURITY</code> + policy accepted and stored but queries return all rows. Prototype enforces user-scoping in app code (<code>ctx.db</code> wrapper); prod external Postgres uses engine RLS.</li>
+<li><strong>Prototype runtime = node:vm restricted context</strong> — trusted dev code only; quickjs-emscripten v0.32 API too fiddly for this cycle; isolated-vm needs native build. Prod = Daytona (contract-only).</li>
+</ul>
+
+<h2>Reviewer findings</h2>
+<p>Impl-review gate (manual): all step acceptance criteria pass with evidence. No blocking findings. Taste 4/5, Originality 4/5 — no repair loop. Security: ctx.db structurally prevents cross-user access; no Node globals in sandbox; account JWT never exposed (only opaque session tokens via functions); prototype-runtime caveat loud in code + startup log + docs; prod adapter path explicit.</p>
+
+<h2>Residual risks / follow-ups</h2>
+<ul>
+<li><strong>Prototype runtime is not a security barrier.</strong> <code>node:vm</code> is escape-able; do not run untrusted functions on it in hosted mode. Daytona adapter (prod) is the follow-up.</li>
+<li><strong>RLS is app-level, not engine-level.</strong> PGLite can't enforce RLS; the <code>ctx.db</code> wrapper is the enforcement. A bug in the wrapper = a cross-user leak. The prod Postgres adapter moves to engine-enforced RLS policies.</li>
+<li><strong>Async functions are not killed on timeout</strong> — the endpoint returns 500 but the underlying promise may still resolve; no CPU/memory caps. Add real cancellation + resource caps (Daytona) for prod.</li>
+<li>No <code>ctx.fetch</code>/network, filesystem, env, timers, or TypeScript transpilation for functions (deferred).</li>
+<li>Function versioning: latest version wins; no aliasing/canary/rollback.</li>
+<li>Account JWT <code>app:*</code> scope grants function management; the <code>/u</code> endpoint does not use account JWTs (user session tokens only) — so the broker-backend gap is closed for the function surface, but account-level <code>/mcp</code> data access still needs an account JWT.</li>
+</ul>
+
+</body>
+</html>

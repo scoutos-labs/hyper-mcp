@@ -152,5 +152,11 @@ export function createServer(config: Config, getPorts: PortsGetter) {
   tool("auth_verify_code", "Verify and consume a one-time code; returns { valid, userId? }", { channel: z.enum(["email", "sms"]), target: z.string(), code: z.string() }, "auth:read", async (a, p, accountId) => p.authVerifyCode(accountId, a), true);
   tool("auth_health", "Check auth backend health", {}, "auth:read", async (_a, p, accountId) => p.authHealth(accountId), true);
 
+  // App (BaaS) — function management
+  tool("app_register_function", "Register/upsert an app function (JS: async (ctx) => result). public=true allows calls without a user session token.", { name: z.string(), body: z.string(), public: z.boolean().optional() }, "app:write", async (a, p, accountId) => { assertWrite(config); return p.appCreateFunction(accountId, a.name, a.body, a.public === true); });
+  tool("app_get_function", "Get a registered app function (source + public flag)", { name: z.string() }, "app:read", async (a, p, accountId) => p.appGetFunction(accountId, a.name), true);
+  tool("app_list_functions", "List registered app functions for the account", {}, "app:read", async (_a, p, accountId) => p.appListFunctions(accountId), true);
+  tool("app_delete_function", "Delete a registered app function", { name: z.string(), confirm: z.boolean().optional() }, "app:dangerous", async (a, p, accountId) => { assertDangerous(config, a.confirm); return p.appDeleteFunction(accountId, a.name); });
+
   return server;
 }

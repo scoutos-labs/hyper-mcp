@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>hyper-mcp — Multi-Provider Admin Trust Root (Convex pattern)</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 920px; margin: 2rem auto; padding: 0 1.25rem; color: #1f2330; background: #fafbff; }
+  h1 { font-size: 1.6rem; border-bottom: 2px solid #4f46e5; padding-bottom: .35rem; }
+  h2 { font-size: 1.2rem; margin-top: 2rem; color: #4f46e5; border-left: 4px solid #4f46e5; padding-left: .5rem; }
+  h3 { font-size: 1.02rem; margin-top: 1.25rem; }
+  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
+  pre { background: #0f1220; color: #eef2ff; padding: .8rem 1rem; border-radius: 8px; overflow-x: auto; }
+  code { background: #eef0fb; padding: .1rem .35rem; border-radius: 4px; }
+  pre code { background: transparent; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: .75rem 0; }
+  th, td { border: 1px solid #d7dbe8; padding: .4rem .6rem; text-align: left; vertical-align: top; }
+  th { background: #eef0fb; }
+  .chip { display: inline-block; padding: .1rem .55rem; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .todo { background: #fff3cd; color: #7a5d00; }
+  .do { background: #d1fae5; color: #065f46; }
+  .risk-low { color: #065f46; }
+  .risk-med { color: #9a3412; }
+  ul { padding-left: 1.25rem; }
+  li { margin: .2rem 0; }
+  .muted { color: #667085; }
+</style>
+</head>
+<body>
+<h1>Multi-Provider Admin Trust Root — applying the Convex auth pattern to hyper-mcp</h1>
+
+<p><strong>Slug:</strong> <code>convex-multiprovider-auth</code> &nbsp;|&nbsp; <strong>Source research:</strong>
+<a href="https://zenbin.org/p/convex-auth-widget-catalog">zenbin.org/p/convex-auth-widget-catalog</a> &nbsp;|&nbsp;
+<strong>Status:</strong> <span class="chip todo">planned</span></p>
+
+<h2>Summary</h2>
+<p>Convex auth (<code>auth.config.ts</code>) declares a <em>list</em> of trusted OIDC providers per
+deployment, each with its own JWKS URL and issuer, and verifies incoming JWTs by routing on the
+token's <code>iss</code> claim to the matching provider's JWKS. hyper-mcp today accepts exactly one
+admin trust root — one inline JWK <em>or</em> one JWKS URL, one issuer, one audience. This task brings
+hyper-mcp's <strong>admin</strong> trust layer to parity with the Convex pattern: a list of trusted
+admin providers with issuer-routed JWT verification, while preserving full backwards compatibility
+with the existing single-provider env vars.</p>
+
+<h2>Project-specific definition</h2>
+<p><strong>"Multi-provider admin trust root"</strong> in hyper-mcp means: a deployment-time list of trusted
+admin identity providers. Each provider declares <code>issuer</code>, <code>audience</code>, and exactly one
+key source (inline <code>publicJwk</code> or remote <code>jwksUrl</code>), plus an optional <code>kid</code>.
+<code>validateAdminJwt</code> decodes the token's <code>iss</code> claim without verification, selects the
+matching provider, and then runs <code>jose</code>'s <code>jwtVerify</code> against that provider's key set
+with the provider's own <code>iss</code>/<code>aud</code>. Scopes are still required server-side
+(<code>accounts:admin</code>); the server remains the authority.</p>
+<p><strong>What it is NOT:</strong></p>
+<ul>
+<li>Not a change to <em>account</em> authentication — accounts already support inline JWK and JWKS URL.</li>
+<li>Not OAuth login flows, user/password login, or a dashboard UI.</li>
+<li>Not a change to the MCP tool surface, scope mapping, port interfaces, or tenant model.</li>
+<li>Not multi-tenancy of admins; admin JWTs always resolve to the synthetic <code>admin</code> account.</li>
+<li>Not a replacement of <code>jose</code>; it reuses <code>createLocalJWKSet</code>/<code>createRemoteJWKSet</code>.</li>
+</ul>
+
+<h2>Goals</h2>
+<ul>
+<li>Accept a list of admin providers and verify admin JWTs by issuer-routed provider selection.</li>
+<li>Backwards compatibility: existing single-<code>HYPER_MCP_ADMIN_*</code> deployments work unchanged.</li>
+<li>Clear, fail-closed behaviour: ambiguous config or unknown issuer fails with explicit errors.</li>
+<li>No auth bypass; no silent unauthenticated fallback.</li>
+</ul>
+
+<h2>Non-goals</h2>
+<ul>
+<li>Account-side auth changes (already JWKS-capable).</li>
+<li>Changing endpoints, tool surface, scopes, or tenant isolation.</li>
+<li>Admin RBAC / multi-admin tiers.</li>
+<li>OAuth flows, refresh tokens, session management.</li>
+</ul>
+
+<h2>Open questions / assumptions</h2>
+<table>
+<tr><th>#</th><th>Question</th><th>Resolution</th></tr>
+<tr><td>Q1</td><td>How to declare multiple providers via env?</td><td>New JSON env var <code>HYPER_MCP_ADMIN_PROVIDERS</code> = a JSON array of provider objects. Mutually exclusive with the legacy single-provider vars; setting both is a startup error.</td></tr>
+<tr><td>Q2</td><td>Can two providers share an issuer?</td><td>No. Issuer routing needs a 1:1 issuer→provider map. Duplicate issuers fail startup with a clear error.</td></tr>
+<tr><td>Q3</td><td>Keep <code>config.admin</code> field?</td><td>Remove it; gate checks move to <code>config.adminProviders.length</code>. Removes a confusing alias and forces all call sites to use the list.</td></tr>
+<tr><td>Q4</td><td>Key-set caching across providers?</td><td>Module-level <code>Map&lt;string, KeySet&gt;</code> keyed by a stable provider key string (<code>iss|aud|publicJwkOrJwksUrl</code>). Remote sets keep jose's built-in cooldown/cache.</td></tr>
+<tr><td>Q5</td><td>Issuer decoding before verification — safe?</td><td>Yes: the unverified <code>iss</code> is only used to <em>select</em> which provider verifies; signature/aud/exp are still enforced by <code>jwtVerify</code>. This mirrors Convex's JWKS-by-issuer lookup.</td></tr>
+</table>
+
+<h2>Security / privacy considerations</h2>
+<ul>
+<li>No secrets, private keys, or token strings are logged. Errors reference issuer/kid only.</li>
+<li>Fail closed: zero providers → 503 on <code>/register</code>/<code>/unregister</code>, stdio refuses to start in hosted mode.</li>
+<li>Ambiguous config (legacy + <code>PROVIDERS</code>) fails startup rather than silently picking one.</li>
+<li>Issuer uniqueness enforced at config parse so routing cannot authenticate against the wrong provider.</li>
+<li>Provider key sets are never leaked; only verification results surface.</li>
+</ul>
+
+<h2>Config format</h2>
+<pre><code># Legacy single provider (unchanged, still supported)
+HYPER_MCP_ADMIN_PUBLIC_JWK='{"kty":"OKP",...,"kid":"admin-1"}'
+HYPER_MCP_ADMIN_ISSUER=admin-agent
+HYPER_MCP_ADMIN_AUDIENCE=hyper-mcp
+HYPER_MCP_ADMIN_KID=admin-1
+
+# OR new multi-provider list (mutually exclusive with the legacy vars)
+HYPER_MCP_ADMIN_PROVIDERS='[
+  {"issuer":"admin-agent","audience":"hyper-mcp","publicJwk":{"kty":"OKP",...,"kid":"admin-1"}},
+  {"issuer":"clerk-admin","audience":"hyper-mcp","jwksUrl":"https://clerk.example.com/.well-known/jwks.json","kid":"clerk-1"}
+]'</code></pre>
+<p class="muted">Tradeoff: a JSON env var is the simplest way to express a list in a 12-factor deployment
+without inventing indexed env names. It is slightly harder to hand-edit than scalar vars, but the legacy
+scalar path remains for single-provider setups, so the cost only falls on operators who actually need
+multiple providers.</p>
+
+<h2>Plan</h2>
+
+<h3>Step 1 — Config: parse multi-provider admin trust root</h3>
+<p><span class="chip risk-med">Risk: medium</span> Touches the security-critical config path.</p>
+<p><strong>Work:</strong> Add <code>AdminProvider</code> type and <code>Config.adminProviders: AdminProvider[]</code>.
+Implement <code>parseAdminProviders(env)</code>: parse legacy single-provider vars OR <code>HYPER_MCP_ADMIN_PROVIDERS</code>
+JSON. Reject ambiguous (both set), duplicate issuers, providers missing issuer/audience, providers with
+neither/both <code>publicJwk</code> and <code>jwksUrl</code>. Remove <code>Config.admin</code>/<code>AdminTrustRoot</code>;
+update <code>assertStdioConfig</code> to check <code>adminProviders.length === 0</code>.</p>
+<p><strong>Acceptance criteria:</strong></p>
+<ul>
+<li>Legacy single-provider env produces <code>adminProviders.length === 1</code> with the expected issuer/audience/key.</li>
+<li><code>HYPER_MCP_ADMIN_PROVIDERS</code> JSON with N providers produces <code>adminProviders.length === N</code>.</li>
+<li>Setting both legacy vars and <code>HYPER_MCP_ADMIN_PROVIDERS</code> throws a clear startup error.</li>
+<li>Duplicate issuer across providers throws.</li>
+<li>Provider with neither/both <code>publicJwk</code>+<code>jwksUrl</code> throws.</li>
+<li>Provider missing <code>issuer</code> or <code>audience</code> throws.</li>
+<li><code>assertStdioConfig</code>: hosted + zero providers throws; hosted + ≥1 provider passes.</li>
+<li><code>npm run typecheck</code> passes.</li>
+</ul>
+<p><strong>Evidence:</strong> new <code>test/admin-multiprovider.test.ts</code> config-parse describe block;
+<code>tsc --noEmit</code> clean.</p>
+
+<h3>Step 2 — auth.ts: issuer-routed admin JWT verification</h3>
+<p><span class="chip risk-med">Risk: medium</span> Core verification path.</p>
+<p><strong>Work:</strong> Replace <code>getAdminKeySet</code> + single <code>adminJwkSet</code> with a
+<code>Map&lt;string, KeySet&gt;</code> keyed by provider key string. Rewrite <code>validateAdminJwt</code>:
+decode unverified <code>iss</code> (and header <code>kid</code>), find matching provider, build/fetch its key
+set, <code>jwtVerify</code> with the provider's <code>issuer</code>/<code>audience</code>, require
+<code>accounts:admin</code>. Unknown issuer → 401 <code>AUTH_FAILED</code>; zero providers → 503
+<code>ADMIN_NOT_CONFIGURED</code>.</p>
+<p><strong>Acceptance criteria:</strong></p>
+<ul>
+<li>Valid admin JWT verifies against its issuing provider in a multi-provider config.</li>
+<li>Token whose <code>iss</code> matches no provider → 401 <code>AUTH_FAILED</code>.</li>
+<li>Token whose <code>iss</code> matches provider A but signed by provider B's key → 401 (signature mismatch).</li>
+<li>Wrong audience for the matched provider → 401.</li>
+<li>Expired / missing <code>accounts:admin</code> behave as before (401 / 403).</li>
+<li>Multi-provider JWKS URL provider verifies (real HTTP JWKS server in test).</li>
+<li><code>npm run typecheck</code> passes.</li>
+</ul>
+<p><strong>Evidence:</strong> <code>test/admin-multiprovider.test.ts</code> verification describe block;
+existing <code>test/jwt-auth.test.ts</code> still green.</p>
+
+<h3>Step 3 — Call-site gates: auth-routes, http, app</h3>
+<p><span class="chip risk-low">Risk: low</span> Mechanical gate migration.</p>
+<p><strong>Work:</strong> Replace <code>if (!config.admin)</code> gates in <code>auth-routes.ts</code>,
+<code>http.ts</code> (<code>adminConfigured</code>), and <code>app.ts</code> with
+<code>adminProviders.length === 0</code>. Keep response shapes identical (503 <code>admin_not_configured</code>).</p>
+<p><strong>Acceptance criteria:</strong></p>
+<ul>
+<li><code>/register</code> and <code>/unregister</code> return 503 when zero providers.</li>
+<li>Landing/health <code>adminConfigured</code> reflects <code>adminProviders.length &gt; 0</code>.</li>
+<li>All existing HTTP-route and posture tests pass unchanged.</li>
+<li><code>npm run typecheck</code> passes.</li>
+</ul>
+<p><strong>Evidence:</strong> <code>test/http-routes.test.ts</code> (503 branch already covered);
+<code>test/posture.test.ts</code>; <code>test/trust-mode.test.ts</code>.</p>
+
+<h3>Step 4 — Tests: multi-provider coverage</h3>
+<p><span class="chip risk-low">Risk: low</span> Pure test additions.</p>
+<p><strong>Work:</strong> Add <code>test/admin-multiprovider.test.ts</code> covering every branch in Steps 1–2
+plus a JWKS-URL provider over a real local HTTP server. Extend <code>test/http-routes.test.ts</code> with a
+zero-providers 503 assertion if not already present.</p>
+<p><strong>Acceptance criteria:</strong></p>
+<ul>
+<li>All branches listed in Steps 1 and 2 have a passing assertion.</li>
+<li>Tests use real signed Ed25519 JWTs (no mocked signatures); JWKS test uses a real HTTP server.</li>
+<li>No new unhandled rejections; total test count increases; all pre-existing tests still pass.</li>
+</ul>
+<p><strong>Evidence:</strong> <code>npm test</code> output (count + pass/fail).</p>
+
+<h3>Step 5 — Docs: README + render.yaml note</h3>
+<p><span class="chip risk-low">Risk: low</span> Documentation.</p>
+<p><strong>Work:</strong> Document <code>HYPER_MCP_ADMIN_PROVIDERS</code> in README's Admin Trust Root
+section, note mutual exclusivity with legacy vars, keep the legacy examples, and add a multi-provider
+example. Note issuer uniqueness and issuer-routed verification (Convex <code>auth.config.ts</code> analogue).</p>
+<p><strong>Acceptance criteria:</strong></p>
+<ul>
+<li>README documents both config styles, mutual exclusivity, and issuer routing.</li>
+<li>Legacy examples unchanged.</li>
+</ul>
+<p><strong>Evidence:</strong> README diff.</p>
+
+<h3>Step 6 — Full validation</h3>
+<p><span class="chip risk-low">Risk: low</span> Gate.</p>
+<p><strong>Work:</strong> Run <code>npm run typecheck</code>, <code>npm run build</code>, <code>npm test</code>.
+Fix any findings.</p>
+<p><strong>Acceptance criteria:</strong> all three green; zero unhandled rejections; no test count drop.</p>
+
+<h2>Validation commands</h2>
+<pre><code>npm run typecheck
+npm run build
+npm test</code></pre>
+
+<h2>LLM-as-judge rubric</h2>
+<table>
+<tr><th>Area</th><th>Judgment</th></tr>
+<tr><td>Correctness</td><td>Issuer-routed verification works; no regression in single-provider path; zero providers fails closed.</td></tr>
+<tr><td>Acceptance coverage</td><td>Every Step 1–6 criterion has test or diff evidence.</td></tr>
+<tr><td>Security/privacy</td><td>No secret/key/token logged; ambiguous/duplicate config fails loud; unknown issuer 401.</td></tr>
+<tr><td>Simplicity</td><td>No over-engineering; <code>config.admin</code> alias removed rather than layered.</td></tr>
+<tr><td>Taste</td><td>Error messages name the conflicting env vars; config DX is clear; issuer routing mirrors Convex idiom. Target ≥4.</td></tr>
+<tr><td>Originality</td><td>Adapts Convex <code>auth.config.ts</code> to a service-registry trust root rather than copy-pasting OAuth. Target ≥4.</td></tr>
+<tr><td>Maintainability</td><td>Provider list + cache map is easy to extend (e.g. per-provider kid pinning later).</td></tr>
+<tr><td>Validation</td><td>typecheck + build + full test suite run.</td></tr>
+</table>
+
+<h2>Definition of done</h2>
+<ul>
+<li>Multiple admin providers can be configured and admin JWTs verify by issuer routing.</li>
+<li>Legacy single-provider deployments behave identically.</li>
+<li>Ambiguous / duplicate-issuer / malformed-provider configs fail at startup with clear errors.</li>
+<li>Zero providers → 503 on admin routes and stdio refuses in hosted mode.</li>
+<li><code>npm run typecheck</code>, <code>npm run build</code>, <code>npm test</code> all green; no test count drop.</li>
+<li>README documents both config styles.</li>
+</ul>
+
+</body>
+</html>

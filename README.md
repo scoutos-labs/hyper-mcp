@@ -48,7 +48,13 @@ Account (registered key)  <──stores──  public JWK or JWKS URL
 
 ### Admin trust root
 
-Configure exactly one of:
+hyper-mcp supports a **list of trusted admin identity providers** (the Convex
+`auth.config.ts` pattern): any OIDC provider (Clerk, WorkOS, Auth0, or a custom
+Ed25519 key) can issue admin JWTs, and verification is **routed by the token's
+`iss` claim** to the matching provider's key set. Configure either a single
+legacy provider or a multi-provider list — not both.
+
+#### Single provider (legacy, still supported)
 
 ```env
 # Option A: inline public JWK
@@ -63,7 +69,29 @@ Required metadata:
 ```env
 HYPER_MCP_ADMIN_ISSUER=admin-agent
 HYPER_MCP_ADMIN_AUDIENCE=hyper-mcp
+HYPER_MCP_ADMIN_KID=admin-1   # optional
 ```
+
+#### Multiple providers
+
+Set `HYPER_MCP_ADMIN_PROVIDERS` to a JSON array of provider objects. Each
+provider must declare `issuer`, `audience`, and exactly one of `publicJwk`
+(inline JWK object or JSON string) or `jwksUrl`; `kid` and `id` are optional.
+Issuers **must be unique** — verification selects a provider by the token's
+`iss`, so a duplicate issuer is a startup error.
+
+```env
+HYPER_MCP_ADMIN_PROVIDERS='[
+  {"issuer":"admin-agent","audience":"hyper-mcp","publicJwk":{"kty":"OKP","crv":"Ed25519","x":"...","kid":"admin-1"}},
+  {"issuer":"clerk-admin","audience":"hyper-mcp","jwksUrl":"https://clerk.example.com/.well-known/jwks.json","kid":"clerk-1"}
+]'
+```
+
+Mixing the legacy single-provider vars with `HYPER_MCP_ADMIN_PROVIDERS` is a
+startup error (ambiguous admin config). With zero providers configured, `/register`
+and `/unregister` return `503 admin_not_configured` and stdio refuses to start
+in hosted trust mode.
+
 
 Optional:
 

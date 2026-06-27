@@ -16,7 +16,7 @@ logger.info("hyper-mcp starting", {
   readOnly: config.readOnly,
   allowDangerous: config.allowDangerous,
   authRequired: config.authRequired,
-  adminConfigured: !!config.admin,
+  adminConfigured: config.adminProviders.length > 0,
   trustMode: config.trustMode,
   limits: config.limits,
 });

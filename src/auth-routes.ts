@@ -8,7 +8,7 @@ export function createAuthRoutes(config: Config, backend: Ports) {
   return {
     register: async (req: any, res: any) => {
       const timer = startTimer("auth.register");
-      if (!config.admin) {
+      if (config.adminProviders.length === 0) {
         return res.status(503).json({ error: "admin_not_configured", message: "Admin trust root not configured" });
       }
 
@@ -96,7 +96,7 @@ export function createAuthRoutes(config: Config, backend: Ports) {
 
     unregister: async (req: any, res: any) => {
       const timer = startTimer("auth.unregister");
-      if (!config.admin) {
+      if (config.adminProviders.length === 0) {
         return res.status(503).json({ error: "admin_not_configured", message: "Admin trust root not configured" });
       }
 

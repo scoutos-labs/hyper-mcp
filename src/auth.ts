@@ -1,5 +1,5 @@
-import { jwtVerify, createLocalJWKSet, createRemoteJWKSet, importJWK, type JWK } from "jose";
-import type { Config, AdminTrustRoot } from "./config.js";
+import { jwtVerify, createLocalJWKSet, createRemoteJWKSet, type JWK } from "jose";
+import type { Config, AdminProvider } from "./config.js";
 import { PortError } from "./errors.js";
 import type { Ports } from "./ports/types.js";
 
@@ -45,39 +45,81 @@ function extractBearer(authHeader: string | undefined): string {
   return authHeader.slice(7);
 }
 
-// ---- Admin JWT ----
+// ---- Admin JWT (multi-provider, issuer-routed) ----
+//
+// Convex's `auth.config.ts` declares a list of trusted OIDC providers and
+// verifies a JWT by looking up the token's `iss` claim against that list, then
+// fetching the matching provider's JWKS. We do the same here: decode the
+// unverified `iss` to select a provider, then enforce signature/aud/exp via
+// jose against that provider's key set. The unverified `iss` only chooses
+// WHICH provider verifies — it never grants trust by itself.
 
-let adminJwkSet: ReturnType<typeof createLocalJWKSet> | ReturnType<typeof createRemoteJWKSet> | null = null;
-let adminTrustRootConfig: AdminTrustRoot | null = null;
+type AdminKeySet = ReturnType<typeof createLocalJWKSet> | ReturnType<typeof createRemoteJWKSet>;
 
-function getAdminKeySet(config: Config) {
-  if (adminJwkSet && adminTrustRootConfig === config.admin) return adminJwkSet;
-  if (!config.admin) return null;
+/** Cache of provider key sets, keyed by a stable provider key string. */
+const adminKeySets = new Map<string, AdminKeySet>();
 
-  adminTrustRootConfig = config.admin;
+function providerKey(p: AdminProvider): string {
+  return `${p.issuer}\u0000${p.audience}\u0000${p.publicJwk ?? ""}\u0000${p.jwksUrl ?? ""}`;
+}
 
-  if (config.admin.publicJwk) {
-    const jwk = JSON.parse(config.admin.publicJwk) as JWK;
-    adminJwkSet = createLocalJWKSet({ keys: [jwk] });
-  } else if (config.admin.jwksUrl) {
-    adminJwkSet = createRemoteJWKSet(new URL(config.admin.jwksUrl), {
-      cooldownDuration: config.jwksCacheSeconds * 1000,
-      cacheMaxAge: config.jwksCacheSeconds * 1000,
+function getAdminKeySet(provider: AdminProvider, cacheSeconds: number): AdminKeySet {
+  const key = providerKey(provider);
+  const cached = adminKeySets.get(key);
+  if (cached) return cached;
+
+  let set: AdminKeySet;
+  if (provider.publicJwk) {
+    const jwk = JSON.parse(provider.publicJwk) as JWK;
+    set = createLocalJWKSet({ keys: [jwk] });
+  } else if (provider.jwksUrl) {
+    set = createRemoteJWKSet(new URL(provider.jwksUrl), {
+      cooldownDuration: cacheSeconds * 1000,
+      cacheMaxAge: cacheSeconds * 1000,
     });
+  } else {
+    // Defensive: config validation should prevent this.
+    throw new PortError("ADMIN_NOT_CONFIGURED", `Admin provider "${provider.issuer}" has no key material`, 503);
   }
-  return adminJwkSet;
+  adminKeySets.set(key, set);
+  return set;
+}
+
+function findProviderByIssuer(config: Config, issuer: string | undefined): AdminProvider | undefined {
+  if (!issuer) return undefined;
+  return config.adminProviders.find((p) => p.issuer === issuer);
 }
 
 export async function validateAdminJwt(token: string, config: Config): Promise<AuthContext> {
-  if (!config.admin) throw new PortError("ADMIN_NOT_CONFIGURED", "Admin trust root not configured", 503);
+  if (config.adminProviders.length === 0) {
+    throw new PortError("ADMIN_NOT_CONFIGURED", "Admin trust root not configured", 503);
+  }
 
-  const keySet = getAdminKeySet(config);
-  if (!keySet) throw new PortError("ADMIN_NOT_CONFIGURED", "Admin trust root not configured", 503);
+  // Decode the unverified token ONLY to read `iss` for provider routing.
+  let unverifiedIssuer: string | undefined;
+  try {
+    const parts = token.split(".");
+    if (parts.length !== 3) throw new Error("malformed");
+    const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
+    unverifiedIssuer = typeof payload.iss === "string" ? payload.iss : undefined;
+  } catch {
+    throw new PortError("AUTH_FAILED", "Admin JWT validation failed: malformed token", 401);
+  }
 
+  const provider = findProviderByIssuer(config, unverifiedIssuer);
+  if (!provider) {
+    throw new PortError(
+      "AUTH_FAILED",
+      `Admin JWT validation failed: no trusted provider for issuer "${unverifiedIssuer ?? ""}"`,
+      401,
+    );
+  }
+
+  const keySet = getAdminKeySet(provider, config.jwksCacheSeconds);
   try {
     const { payload } = await jwtVerify(token, keySet, {
-      issuer: config.admin.issuer,
-      audience: config.admin.audience,
+      issuer: provider.issuer,
+      audience: provider.audience,
     });
 
     const scopes = extractScopes(payload);
@@ -87,8 +129,8 @@ export async function validateAdminJwt(token: string, config: Config): Promise<A
 
     return {
       accountId: "admin",
-      issuer: config.admin.issuer,
-      audience: config.admin.audience,
+      issuer: provider.issuer,
+      audience: provider.audience,
       scopes,
       source: "admin",
     };

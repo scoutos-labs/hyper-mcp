@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Progress — hyper-mcp code review fixes</title>
+<style>
+  body { font: 14px system-ui, sans-serif; max-width: 860px; margin: 0 auto; padding: 24px; color: #1a1a1a; }
+  h1 { font-size: 20px; }
+  h2 { font-size: 15px; border-bottom: 1px solid #ddd; padding-bottom: 4px; margin-top: 24px; }
+  .status { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; }
+  .planned { background: #e8f0fe; color: #1a73e8; }
+  .progress { background: #fef7e0; color: #e37400; }
+  .complete { background: #e6f4ea; color: #137333; }
+  .repairing { background: #fce8e6; color: #c5221f; }
+  code { background: #f5f5f5; padding: 2px 5px; border-radius: 3px; font-family: monospace; font-size: 12px; }
+  .checklist { list-style: none; padding: 0; }
+  .checklist li { padding: 4px 0; }
+  .step { margin: 12px 0; padding: 10px; border-left: 3px solid #ccc; }
+  .step.done { border-left-color: #137333; }
+  .step.running { border-left-color: #e37400; }
+  .step.planned { border-left-color: #1a73e8; }
+  .crit { margin: 4px 0; font-size: 13px; }
+  .pass { color: #137333; }
+  .fail { color: #c5221f; }
+  .uncertain { color: #e37400; }
+  .meta { font-size: 12px; color: #666; margin-top: 8px; }
+</style>
+</head>
+<body>
+
+<h1>Progress — hyper-mcp code review fixes</h1>
+
+<p><strong>Status:</strong> <span class="status planned">planned</span><br>
+<strong>Date:</strong> 2026-06-27<br>
+<strong>Branch:</strong> main (clean working tree)</p>
+
+<h2>Plan</h2>
+<table>
+  <tr><th>#</th><th>Step</th><th>Status</th></tr>
+  <tr><td>1</td><td>Fix require in cap.ts (#1)</td><td><span class="status planned">planned</span></td></tr>
+  <tr><td>2</td><td>Replace Proxy with adapter class (#2)</td><td><span class="status planned">planned</span></td></tr>
+  <tr><td>3</td><td>Extract landing HTML to .html (#3)</td><td><span class="status planned">planned</span></td></tr>
+  <tr><td>4</td><td>Narrow accountId types (#4)</td><td><span class="status planned">planned</span></td></tr>
+  <tr><td>5</td><td>Comment void payload (#5)</td><td><span class="status planned">planned</span></td></tr>
+</table>
+
+<h2>Steps</h2>
+
+<div class="step planned">
+  <strong>Step 1:</strong> Fix require in cap.ts (#1)<br>
+  <span class="status planned">planned</span>
+  <div class="crit">
+    <span class="uncertain">☐</span> cap.ts uses ESM import
+    <span class="uncertain">☐</span> createCapSecret() uses randomBytes(32).toString("hex")
+    <span class="uncertain">☐</span> tsc passes
+    <span class="uncertain">☐</span> No require() in cap.ts
+  </div>
+  <div class="meta">Validation: <code>npx tsc --noEmit && grep -n "require" src/baas/cap.ts</code></div>
+</div>
+
+<div class="step planned">
+  <strong>Step 2:</strong> Replace Proxy with adapter class (#2)<br>
+  <span class="status planned">planned</span>
+  <div class="crit">
+    <span class="uncertain">☐</span> New PgAppDataAdapter class
+    <span class="uncertain">☐</span> All appData* delegate to PgAppDataPort
+    <span class="uncertain">☐</span> All other Ports methods delegate to base
+    <span class="uncertain">☐</span> app.ts uses new PgAppDataAdapter(...)
+    <span class="uncertain">☐</span> tsc passes
+    <span class="uncertain">☐</span> All tests pass
+  </div>
+  <div class="meta">Validation: <code>npx tsc --noEmit && npx vitest run test/baas.test.ts test/baas-internal-cap.test.ts test/conformance/pglite.test.ts</code></div>
+</div>
+
+<div class="step planned">
+  <strong>Step 3:</strong> Extract landing HTML to .html (#3)<br>
+  <span class="status planned">planned</span>
+  <div class="crit">
+    <span class="uncertain">☐</span> public/landing.html exists
+    <span class="uncertain">☐</span> landing.ts reads file via fs.readFile
+    <span class="uncertain">☐</span> GET / serves identical HTML
+    <span class="uncertain">☐</span> tsc passes
+  </div>
+  <div class="meta">Validation: <code>npx tsc --noEmit && npm run build && curl -s http://localhost:3000/ | head -5</code></div>
+</div>
+
+<div class="step planned">
+  <strong>Step 4:</strong> Narrow accountId types (#4)<br>
+  <span class="status planned">planned</span>
+  <div class="crit">
+    <span class="uncertain">☐</span> dataHealth() has no accountId param
+    <span class="uncertain">☐</span> authHealth() takes accountId: string
+    <span class="uncertain">☐</span> Other methods keep string | undefined
+    <span class="uncertain">☐</span> Call sites updated
+    <span class="uncertain">☐</span> tsc passes
+    <span class="uncertain">☐</span> All tests pass
+  </div>
+  <div class="meta">Validation: <code>npx tsc --noEmit && npx vitest run</code></div>
+</div>
+
+<div class="step planned">
+  <strong>Step 5:</strong> Comment void payload (#5)<br>
+  <span class="status planned">planned</span>
+  <div class="crit">
+    <span class="uncertain">☐</span> void payload replaced with comment
+    <span class="uncertain">☐</span> No functional change
+    <span class="uncertain">☐</span> tsc passes
+  </div>
+  <div class="meta">Validation: <code>npx tsc --noEmit && git diff</code></div>
+</div>
+
+<h2>Plan review</h2>
+<p><strong>Status:</strong> Not yet run</p>
+
+<h2>Implementation review</h2>
+<p><strong>Status:</strong> Not yet run</p>
+
+<h2>Validation summary</h2>
+<p><strong>tsc:</strong> Not yet run<br>
+<strong>Tests:</strong> Not yet run</p>
+
+<h2>Residual risks</h2>
+<ul>
+  <li>#2: Adapter class must implement ALL Ports methods — missing methods caught by tsc.</li>
+  <li>#3: File path resolution from both tsx and node dist modes.</li>
+</ul>
+
+</body>
+</html>

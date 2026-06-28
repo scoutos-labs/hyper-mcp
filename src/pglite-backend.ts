@@ -609,9 +609,6 @@ export class PgliteBackend implements Ports {
     await this.q(`DELETE FROM account_jwks WHERE account_id=$1`, [accountId]);
     return { ok: true, accountId };
   }
-  async accountSetCachedJwks(accountId: string, jwks: object, expiresAt: Date) {
-    await this.q(`UPDATE account_jwks SET cached_jwks=$2::jsonb, cache_expires_at=$3 WHERE account_id=$1`, [accountId, JSON.stringify(jwks), expiresAt]);
-  }
   async auditLogQuery(accountId: string) {
     const r = await this.q<any>(`SELECT * FROM account_audit_log WHERE account_id=$1 ORDER BY created_at DESC`, [accountId]);
     return r.rows;

@@ -8,6 +8,7 @@ import { buildFunctionContext } from "./baas/context.js";
 import { createIdentityResolver, createFunctionRuntime } from "./baas/index.js";
 import { createCapSecret, createCapabilityHandler } from "./baas/cap.js";
 import { PgAppDataPort } from "./baas/appdata-pg.js";
+import { PgAppDataAdapter } from "./baas/pg-adapter.js";
 import type { Ports } from "./ports/types.js";
 import { validateAccountJwt, validateAdminJwt, extractBearer } from "./auth.js";
 import { PortError } from "./errors.js";
@@ -41,9 +42,11 @@ export function createApp(config: Config, getPorts: PortsGetter): ReturnType<typ
   }
 
   // If app_data is backed by external Postgres (engine RLS), lazily init a
-  // PgAppDataPort and expose a Ports view whose appData* methods route to it
-  // (everything else stays on the PGLite backend). The DB enforces user-scoping.
+  // PgAppDataPort and wrap the base Ports in a PgAppDataAdapter that routes
+  // appData* calls to it while forwarding every other Port method to the
+  // base. The DB enforces user-scoping.
   let pgAppData: PgAppDataPort | undefined;
+  let pgAdapter: Ports | undefined;
   const getBaasPorts = async (): Promise<Ports> => {
     const base = await getPorts();
     if (config.appDataBackend !== "pg" || !config.appDataPgUrl) return base;
@@ -51,18 +54,15 @@ export function createApp(config: Config, getPorts: PortsGetter): ReturnType<typ
       pgAppData = new PgAppDataPort(config.appDataPgUrl);
       await pgAppData.init();
     }
-    return new Proxy(base, {
-      get(t, prop) {
-        if (typeof prop === "string" && prop.startsWith("appData") && pgAppData) return (pgAppData as any)[prop].bind(pgAppData);
-        const v = (t as any)[prop];
-        return typeof v === "function" ? v.bind(t) : v;
-      },
-    }) as Ports;
+    if (!pgAdapter) {
+      pgAdapter = new PgAppDataAdapter(base, pgAppData);
+    }
+    return pgAdapter;
   };
 
   // Public routes
-  app.get("/", (_req: any, res: any) => {
-    res.status(200).type("html").send(landingPage());
+  app.get("/", async (_req: any, res: any) => {
+    res.status(200).type("html").send(await landingPage());
   });
 
   app.get("/health", (_req: any, res: any) => {

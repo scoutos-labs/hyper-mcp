@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>PRD — hyper-mcp code review fixes (#1-#5)</title>
+<style>
+  body { font: 14px system-ui, sans-serif; max-width: 860px; margin: 0 auto; padding: 24px; color: #1a1a1a; }
+  h1 { font-size: 22px; }
+  h2 { font-size: 16px; border-bottom: 1px solid #ddd; padding-bottom: 4px; margin-top: 28px; }
+  h3 { font-size: 14px; color: #555; }
+  table { width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 10px; border: 1px solid #ddd; }
+  th { background: #f5f5f5; }
+  .pass { color: #1a7f37; }
+  .fail { color: #c5221f; }
+  .warn { color: #e37400; }
+  code { background: #f5f5f5; padding: 2px 5px; border-radius: 3px; font-family: monospace; font-size: 12px; word-break: break-all; }
+  .step { margin: 16px 0; padding: 12px; border-left: 3px solid #2457ff; background: #fafafa; }
+</style>
+</head>
+<body>
+
+<h1>PRD — hyper-mcp code review fixes (#1–#5)</h1>
+<p><strong>Date:</strong> 2026-06-27<br>
+<strong>Source:</strong> Code review of hyper-mcp on main (commit <code>6af7906</code>)</p>
+
+<h2>Core concept (project-specific)</h2>
+<p>
+  <strong>hyper-mcp</strong> is an MCP server that exposes ScoutOS-style
+  <em>ports</em> (data / cache / blob / queue / search / auth) over the
+  Model Context Protocol. It runs on two transports:
+</p>
+<ul>
+  <li><strong>stdio</strong> (local/dev) — no HTTP bearer-token step</li>
+  <li><strong>StreamableHTTP</strong> (hosted) — JWT-verified,
+      account-scoped, with an internal capability-RPC boundary for
+      Daytona sandboxes</li>
+</ul>
+<p>The security model relies on <code>jose</code> for JWT verify/sign,
+scrypt for password hashing, <code>AsyncLocalStorage</code> for
+request-scoped auth, and an adapter pattern (VM prototype vs Daytona
+sandbox) for function execution.  The prod app_data layer uses
+Postgres row-level security with <code>FORCE ROW LEVEL SECURITY</code>.</p>
+
+<h2>Definition of done</h2>
+<ol>
+  <li><strong>#1</strong> Remove <code>require("node:crypto")</code> in
+      <code>baas/cap.ts</code>; use ESM <code>import</code>.</li>
+  <li><strong>#2</strong> Replace the <code>new Proxy(base, {...})</code>
+      delegation in <code>app.ts</code> with an explicit adapter class
+      <code>PgAppDataAdapter</code>.</li>
+  <li><strong>#3</strong> Extract the landing page HTML from the
+      <code>landing.ts</code> template literal into a real
+      <code>public/landing.html</code> file served from disk.</li>
+  <li><strong>#4</strong> Narrow <code>accountId: string | undefined</code>
+      in <code>ports/types.ts</code> to <code>string</code> where the
+      call site always supplies one (e.g. <code>dataHealth()</code>,
+      <code>authHealth()</code>).</li>
+  <li><strong>#5</strong> Replace <code>void payload;</code> in
+      <code>validateAccountJwt</code> with a clarifying comment about
+      why payload claims are unused beyond <code>issuer</code> /
+      <code>audience</code> (enforced by <code>jwtVerify</code>).</li>
+</ol>
+
+<h2>Constraints</h2>
+<ul>
+  <li>All changes must compile cleanly with <code>npx tsc --noEmit</code>.</li>
+  <li>All 220 existing tests must keep passing.</li>
+  <li>Security-sensitive code paths (JWT verify, cap token boundary,
+      auth-context propagation) must not regress.</li>
+  <li>No breaking changes to the public MCP tool schema or behavior.</li>
+</ul>
+
+<h2>Steps</h2>
+
+<div class="step">
+<h3>Step 1 — Fix <code>require</code> in <code>baas/cap.ts</code> (#1)</h3>
+<p><strong>Acceptance criteria</strong></p>
+<ul>
+  <li><code>baas/cap.ts</code> uses
+      <code>import { randomBytes } from "node:crypto"</code>.</li>
+  <li><code>createCapSecret()</code> calls
+      <code>randomBytes(32).toString("hex")</code>.</li>
+  <li><code>npx tsc --noEmit</code> passes.</li>
+  <li>No functional regression — cap token sign / verify still works.</li>
+</ul>
+<p><strong>Validation:</strong>
+   <code>npx tsc --noEmit && grep -n "require" src/baas/cap.ts</code>
+   (should print nothing).</p>
+</div>
+
+<div class="step">
+<h3>Step 2 — Replace Proxy with adapter class (#2)</h3>
+<p><strong>Acceptance criteria</strong></p>
+<ul>
+  <li>New file <code>src/baas/pg-adapter.ts</code> exports class
+      <code>PgAppDataAdapter</code> that implements <code>Ports</code>.</li>
+  <li>Every <code>appData*</code> method delegates to the
+      <code>PgAppDataPort</code> instance.</li>
+  <li>Every other <code>Ports</code> method delegates to the wrapped
+      base <code>Ports</code> instance (bound correctly).</li>
+  <li><code>app.ts</code> uses
+      <code>new PgAppDataAdapter(basePorts, pgAppData)</code> instead of
+      <code>new Proxy(...)</code>.</li>
+  <li><code>npx tsc --noEmit</code> passes.</li>
+  <li>App-data / BaaS / conformance tests still pass.</li>
+</ul>
+<p><strong>Validation:</strong>
+   <code>npx tsc --noEmit</code> and
+   <code>npx vitest run test/baas.test.ts test/baas-internal-cap.test.ts test/conformance/pglite.test.ts</code>.</p>
+</div>
+
+<div class="step">
+<h3>Step 3 — Extract landing HTML to <code>public/landing.html</code> (#3)</h3>
+<p><strong>Acceptance criteria</strong></p>
+<ul>
+  <li>New file <code>public/landing.html</code> containing the full
+      HTML (not a template literal, not a <code>.ejs</code> template —
+      just plain HTML).</li>
+  <li><code>landing.ts</code> reads the file via
+      <code>fs.readFile</code> (cached in-memory for hot path).</li>
+  <li>Dev server serves identical HTML at <code>GET /</code>.</li>
+  <li><code>npx tsc --noEmit</code> passes.</li>
+</ul>
+<p><strong>Validation:</strong>
+   <code>npx tsc --noEmit</code>
+   and serve + compare with <code>curl -s http://localhost:3000/ | head -5</code>.</p>
+</div>
+
+<div class="step">
+<h3>Step 4 — Narrow <code>accountId</code> types (#4)</h3>
+<p><strong>Acceptance criteria</strong></p>
+<ul>
+  <li><code>dataHealth()</code> takes no <code>accountId</code> parameter.</li>
+  <li><code>authHealth()</code> takes <code>accountId: string</code> (always supplied).</li>
+  <li>All other methods keep <code>string | undefined</code> where the
+      caller may not have one.</li>
+  <li>Call sites in <code>server.ts</code> and <code>app.ts</code>
+      pass the right thing.</li>
+  <li><code>npx tsc --noEmit</code> passes.</li>
+  <li>All tests still pass.</li>
+</ul>
+<p><strong>Validation:</strong>
+   <code>npx tsc --noEmit && npx vitest run</code>.</p>
+</div>
+
+<div class="step">
+<h3>Step 5 — Comment out <code>void payload</code> (#5)</h3>
+<p><strong>Acceptance criteria</strong></p>
+<ul>
+  <li>In <code>validateAccountJwt</code>,
+      <code>void payload;</code> is replaced with a comment explaining
+      why payload claims are not consumed (issuer + audience already
+      enforced by <code>jwtVerify</code> options).</li>
+  <li>No functional change.</li>
+  <li><code>npx tsc --noEmit</code> passes.</li>
+</ul>
+<p><strong>Validation:</strong> <code>npx tsc --noEmit && git diff</code>.</p>
+</div>
+
+<h2>Non-goals</h2>
+<ul>
+  <li>No new features, tools, or endpoints.</li>
+  <li>No changes to the MCP tool schema or runtime behavior.</li>
+  <li>No changes to the JWT protocol or token format.</li>
+  <li>No change to test coverage — existing tests must keep passing.</li>
+</ul>
+
+<h2>Risks</h2>
+<table>
+  <tr><th>#</th><th>Risk</th><th>Mitigation</th></tr>
+  <tr><td>#2</td><td>If any <code>appData*</code> method is missed in the adapter
+                       class, a runtime error will occur in hosted mode.</td>
+      <td>TypeScript interface enforcement catches missing methods at
+           compile time. Add a dedicated conformance test that exercises
+           every <code>appData*</code> method through the adapter.</td></tr>
+  <tr><td>#3</td><td>File path must be resolvable from both dev
+                       (<code>tsx</code>) and prod
+                       (<code>node dist/http.js</code>) modes.</td>
+      <td>Use <code>new URL("../public/landing.html", import.meta.url).pathname</code>
+           so the path resolves relative to the source file, not the CWD.</td></tr>
+</table>
+
+</body>
+</html>

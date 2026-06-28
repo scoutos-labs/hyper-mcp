@@ -1,5 +1,5 @@
 import { SignJWT, jwtVerify } from "jose";
-import { createSecretKey } from "node:crypto";
+import { createSecretKey, randomBytes } from "node:crypto";
 import type { Ports } from "../ports/types.js";
 
 /**
@@ -13,7 +13,7 @@ import type { Ports } from "../ports/types.js";
 export type CapContext = { accountId: string; userId: string | null };
 
 export function createCapSecret(): string {
-  return require("node:crypto").randomBytes(32).toString("hex");
+  return randomBytes(32).toString("hex");
 }
 
 function key(secret: string) {

@@ -16,6 +16,18 @@ export interface AdminProvider {
 
 export type TrustMode = "local" | "hosted";
 
+/** A trusted OIDC provider for BaaS boundary identity (IdentityResolver prod impl). */
+export interface OidcProvider {
+  issuer: string;
+  audience: string;
+  jwksUrl: string;
+  /** The hyper-mcp account whose functions end users from this issuer may call. */
+  accountId: string;
+}
+export type BaasIdentity = "opaque" | "oidc";
+export type BaasRuntime = "vm" | "daytona";
+export type AppDataBackend = "pglite" | "pg";
+
 /**
  * Configurable resource limits. All default to the pre-config hardcoded values
  * so existing deployments keep their behavior. Each cap is the ceiling applied
@@ -71,8 +83,60 @@ export interface Config {
   authSessionTtlSeconds: number;
   /** Wall-clock timeout (ms) for a single BaaS function call via /u/:accountId/:fn. */
   functionTimeoutMs: number;
+  /** BaaS boundary identity adapter: opaque (default) | oidc. */
+  baasIdentity: BaasIdentity;
+  /** BaaS function runtime adapter: vm (default, trusted dev) | daytona. */
+  baasRuntime: BaasRuntime;
+  /** app_data backend adapter: pglite (default) | pg (external Postgres engine RLS). */
+  appDataBackend: AppDataBackend;
+  /** Trusted OIDC providers when baasIdentity=oidc. */
+  baasOidcProviders: OidcProvider[];
+  /** Wall-clock timeout (ms) for a Daytona function call. */
+  daytonaTimeoutMs: number;
+  /** External Postgres URL for app_data when appDataBackend=pg. */
+  appDataPgUrl: string | undefined;
+  /** Public base URL the Daytona sandbox calls back into for capabilities (required when baasRuntime=daytona). */
+  baasCapUrl: string | undefined;
+  /** Per-process HS256 secret for internal capability tokens (set at startup, not from env). */
+  baasCapSecret: string | undefined;
+  /** Optional injected Daytona client (for tests); defaults to new Daytona() from env. */
+  daytonaClient?: unknown;
   /** Configurable resource limits, applied by the backend adapter. */
   limits: ResourceLimits;
+}
+
+function parseBaasOidcProviders(env: Record<string, string | undefined>): OidcProvider[] {
+  const raw = env.HYPER_MCP_BAAS_OIDC_PROVIDERS;
+  if (raw === undefined || raw === "") return [];
+  let arr: unknown;
+  try { arr = JSON.parse(raw); } catch (e) {
+    throw new Error(`HYPER_MCP_BAAS_OIDC_PROVIDERS must be a JSON array: ${(e as Error).message}`);
+  }
+  if (!Array.isArray(arr)) throw new Error("HYPER_MCP_BAAS_OIDC_PROVIDERS must be a JSON array of provider objects");
+  const out: OidcProvider[] = [];
+  const seenIssuers = new Set<string>();
+  for (let i = 0; i < arr.length; i++) {
+    const p = arr[i];
+    if (!p || typeof p !== "object") throw new Error(`HYPER_MCP_BAAS_OIDC_PROVIDERS[${i}] must be an object`);
+    const o = p as Record<string, unknown>;
+    const issuer = o.issuer, audience = o.audience, jwksUrl = o.jwksUrl, accountId = o.accountId;
+    if (typeof issuer !== "string" || !issuer) throw new Error(`HYPER_MCP_BAAS_OIDC_PROVIDERS[${i}].issuer is required`);
+    if (typeof audience !== "string" || !audience) throw new Error(`HYPER_MCP_BAAS_OIDC_PROVIDERS[${i}].audience is required`);
+    if (typeof jwksUrl !== "string" || !jwksUrl) throw new Error(`HYPER_MCP_BAAS_OIDC_PROVIDERS[${i}].jwksUrl is required`);
+    if (typeof accountId !== "string" || !accountId) throw new Error(`HYPER_MCP_BAAS_OIDC_PROVIDERS[${i}].accountId is required`);
+    try { new URL(jwksUrl); } catch { throw new Error(`HYPER_MCP_BAAS_OIDC_PROVIDERS[${i}].jwksUrl is not a valid URL`); }
+    if (seenIssuers.has(issuer)) throw new Error(`HYPER_MCP_BAAS_OIDC_PROVIDERS duplicate issuer "${issuer}"`);
+    seenIssuers.add(issuer);
+    out.push({ issuer, audience, jwksUrl, accountId });
+  }
+  return out;
+}
+
+function parseEnum<T extends string>(env: Record<string, string | undefined>, key: string, allowed: T[], fallback: T): T {
+  const raw = env[key];
+  if (raw === undefined || raw === "") return fallback;
+  if (!allowed.includes(raw as T)) throw new Error(`${key} must be one of ${allowed.join(", ")}, got: ${JSON.stringify(raw)}`);
+  return raw as T;
 }
 
 /**
@@ -252,6 +316,15 @@ export function loadConfig(env = process.env as Record<string, string | undefine
     metricsPublic: env.HYPER_MCP_METRICS_PUBLIC !== "false",
     authSessionTtlSeconds: parsePositiveInt(env, "HYPER_MCP_AUTH_SESSION_TTL_SECONDS", 86400),
     functionTimeoutMs: parsePositiveInt(env, "HYPER_MCP_FUNCTION_TIMEOUT_MS", 5000),
+    baasIdentity: parseEnum(env, "HYPER_MCP_BAAS_IDENTITY", ["opaque", "oidc"], "opaque"),
+    baasRuntime: parseEnum(env, "HYPER_MCP_BAAS_RUNTIME", ["vm", "daytona"], "vm"),
+    appDataBackend: parseEnum(env, "HYPER_MCP_APP_DATA_BACKEND", ["pglite", "pg"], "pglite"),
+    baasOidcProviders: parseBaasOidcProviders(env),
+    daytonaTimeoutMs: parsePositiveInt(env, "HYPER_MCP_DAYTONA_TIMEOUT_MS", 20000),
+    appDataPgUrl: env.HYPER_MCP_APP_DATA_PG_URL || undefined,
+    baasCapUrl: env.HYPER_MCP_BAAS_CAP_URL || undefined,
+    baasCapSecret: undefined,
+    daytonaClient: undefined,
     limits: parseLimits(env),
   };
 }

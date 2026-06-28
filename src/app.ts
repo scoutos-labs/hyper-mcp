@@ -4,14 +4,15 @@ import type { Config } from "./config.js";
 import { createServer } from "./server.js";
 import { landingPage } from "./landing.js";
 import { createAuthRoutes } from "./auth-routes.js";
-import { createOpaqueTokenResolver } from "./baas/identity.js";
 import { buildFunctionContext } from "./baas/context.js";
-import { createVmFunctionRuntime, VM_RUNTIME_NAME } from "./baas/runtime.js";
+import { createIdentityResolver, createFunctionRuntime } from "./baas/index.js";
+import { createCapSecret, createCapabilityHandler } from "./baas/cap.js";
+import { PgAppDataPort } from "./baas/appdata-pg.js";
+import type { Ports } from "./ports/types.js";
 import { validateAccountJwt, validateAdminJwt, extractBearer } from "./auth.js";
 import { PortError } from "./errors.js";
 import { runWithAuth } from "./auth-context.js";
 import { logger, startTimer, requestLogger, getMetrics, recordAuthFailure } from "./logger.js";
-import type { Ports } from "./ports/types.js";
 
 export type PortsGetter = () => Promise<Ports>;
 
@@ -26,16 +27,38 @@ export function createApp(config: Config, getPorts: PortsGetter): ReturnType<typ
   // Request logging middleware
   app.use(requestLogger());
 
-  // BaaS function runtime. Created once; reused across /u/:accountId/:fn calls.
-  const functionRuntime = createVmFunctionRuntime();
-  if (functionRuntime.name === VM_RUNTIME_NAME) {
+  // BaaS adapters (config-selected). The internal capability secret is a
+  // per-process random key used to sign the cap tokens handed to sandboxes.
+  config.baasCapSecret = createCapSecret();
+  const functionRuntime = createFunctionRuntime(config);
+  if (functionRuntime.name === "vm-trusted-prototype") {
     logger.warn(
       `BaaS function runtime is "${functionRuntime.name}" — NOT a security barrier; only run code you trust. Use the Daytona adapter for untrusted/multi-tenant functions.`,
       { runtime: functionRuntime.name },
     );
   } else {
-    logger.info("BaaS function runtime", { runtime: functionRuntime.name });
+    logger.info("BaaS function runtime", { runtime: functionRuntime.name, identity: config.baasIdentity, appData: config.appDataBackend });
   }
+
+  // If app_data is backed by external Postgres (engine RLS), lazily init a
+  // PgAppDataPort and expose a Ports view whose appData* methods route to it
+  // (everything else stays on the PGLite backend). The DB enforces user-scoping.
+  let pgAppData: PgAppDataPort | undefined;
+  const getBaasPorts = async (): Promise<Ports> => {
+    const base = await getPorts();
+    if (config.appDataBackend !== "pg" || !config.appDataPgUrl) return base;
+    if (!pgAppData) {
+      pgAppData = new PgAppDataPort(config.appDataPgUrl);
+      await pgAppData.init();
+    }
+    return new Proxy(base, {
+      get(t, prop) {
+        if (typeof prop === "string" && prop.startsWith("appData") && pgAppData) return (pgAppData as any)[prop].bind(pgAppData);
+        const v = (t as any)[prop];
+        return typeof v === "function" ? v.bind(t) : v;
+      },
+    }) as Ports;
+  };
 
   // Public routes
   app.get("/", (_req: any, res: any) => {
@@ -87,13 +110,26 @@ export function createApp(config: Config, getPorts: PortsGetter): ReturnType<typ
   app.post("/register", authRoutes.register);
   app.post("/unregister", authRoutes.unregister);
 
+  // Internal capability RPC: the Daytona sandbox calls back into hyper-mcp
+  // with a signed cap token; the handler re-verifies and enforces user-scoping.
+  app.post("/_internal/cap/:op", async (req: any, res: any) => {
+    try {
+      const ports = await getBaasPorts();
+      return await createCapabilityHandler(ports, config.baasCapSecret!)(req, res);
+    } catch (e) {
+      logger.error("cap endpoint error", { error: (e as Error).message });
+      return res.status(500).json({ error: "INTERNAL_ERROR" });
+    }
+  });
+
   // BaaS dynamic endpoint: call an account's authored function with a user
-  // session token (or no token for public functions). This is the surface a
-  // static frontend (e.g. ZenBin) calls directly — no account JWT required.
+  // session token or OIDC JWT (or no token for public functions). The resolver
+  // and runtime are config-selected (opaque/vm prototype or oidc/daytona prod).
+  const resolver = createIdentityResolver(config, getBaasPorts);
   app.post("/u/:accountId/:fn", async (req: any, res: any) => {
     const timer = startTimer("baas.function");
     try {
-      const ports = await getPorts();
+      const ports = await getBaasPorts();
       const { accountId, fn } = req.params;
       const got = await ports.appGetFunction(accountId, fn);
       if (!got.found || !got.fn) {
@@ -106,7 +142,7 @@ export function createApp(config: Config, getPorts: PortsGetter): ReturnType<typ
         const cred = req.headers.authorization && String(req.headers.authorization).startsWith("Bearer ")
           ? String(req.headers.authorization).slice(7)
           : undefined;
-        const ident = await createOpaqueTokenResolver(ports).resolve(accountId, cred);
+        const ident = await resolver.resolve(accountId, cred);
         if (!ident) {
           timer.end({ authFailed: true });
           recordAuthFailure();

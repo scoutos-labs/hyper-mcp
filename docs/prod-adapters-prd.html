@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>hyper-mcp — Prod BaaS Adapters (Daytona, Postgres RLS, OIDC boundary)</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 960px; margin: 2rem auto; padding: 0 1.25rem; color: #1f2330; background: #fafbff; }
+  h1 { font-size: 1.55rem; border-bottom: 2px solid #4f46e5; padding-bottom: .35rem; }
+  h2 { font-size: 1.15rem; margin-top: 1.75rem; color: #4f46e5; border-left: 4px solid #4f46e5; padding-left: .5rem; }
+  h3 { font-size: 1.02rem; margin-top: 1.2rem; }
+  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
+  pre { background: #0f1220; color: #eef2ff; padding: .8rem 1rem; border-radius: 8px; overflow-x: auto; }
+  code { background: #eef0fb; padding: .1rem .35rem; border-radius: 4px; }
+  pre code { background: transparent; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: .75rem 0; }
+  th, td { border: 1px solid #d7dbe8; padding: .4rem .6rem; text-align: left; vertical-align: top; }
+  th { background: #eef0fb; }
+  .chip { display: inline-block; padding: .1rem .55rem; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .todo { background: #fff3cd; color: #7a5d00; }
+  .warn { background: #fee2e2; color: #991b1b; }
+  .do { background: #d1fae5; color: #065f46; }
+  ul { padding-left: 1.25rem; }
+  .muted { color: #667085; }
+</style>
+</head>
+<body>
+<h1>Prod BaaS Adapters — Daytona, Postgres engine RLS, OIDC boundary</h1>
+<p><strong>Slug:</strong> <code>prod-adapters</code> &nbsp;|&nbsp; <strong>Branch:</strong> <code>feat/prod-adapters</code> (off <code>main</code>) &nbsp;|&nbsp;
+<strong>Status:</strong> <span class="chip todo">planned</span></p>
+
+<h2>Summary</h2>
+<p>Implement the production impls behind the BaaS adapter contracts shipped in PR #10, so the swappable
+substrate actually has a prod side — not just a prototype. Three adapters, each behind the contract already
+in <code>src/baas/types.ts</code>:</p>
+<ul>
+<li><strong>OIDC JWT IdentityResolver</strong> — boundary auth via Clerk/AuthKit/Auth0 JWTs verified against the provider's JWKS (reuses the <code>jose</code> machinery from the admin trust).</li>
+<li><strong>Daytona FunctionRuntime</strong> — real isolated execution of untrusted functions in Daytona sandboxes, with capability RPC back into hyper-mcp.</li>
+<li><strong>External Postgres engine RLS</strong> — engine-enforced row-level security for BaaS <code>app_data</code> via Postgres <code>FORCE ROW LEVEL SECURITY</code> policies + <code>SET LOCAL app.user_id</code>.</li>
+</ul>
+<p>Adapter selection is config-driven; prototype impls remain the default. The full external-Postgres <code>Ports</code> adapter (all ports) is explicitly a follow-up — this cycle proves the prod RLS path on the BaaS <code>app_data</code> surface.</p>
+
+<h2>Definition</h2>
+<p>Each prod adapter is a drop-in impl of an existing contract (<code>IdentityResolver</code>,
+<code>FunctionRuntime</code>, <code>AppDataPort</code>) selectable by env config. The <code>/u/:accountId/:fn</code>
+endpoint and the function authoring DX are unchanged — only the backing implementation swaps.</p>
+<p><strong>What it is NOT:</strong> not a hosted SaaS (you still deploy hyper-mcp); not a new function DX;
+not the full external-Postgres <code>Ports</code> adapter (follow-up); not function versioning/cron/network (still deferred).</p>
+
+<h2>Research findings (gating)</h2>
+<ul>
+<li><strong>No local Postgres in this env.</strong> External-Postgres RLS tests are gated on <code>PG_TEST_URL</code>; they skip when unset. (PGLite's lack of RLS enforcement was already established in the BaaS cycle.)</li>
+<li><strong><code>@daytona/sdk</code> v0.192.0 is available.</strong> Daytona <code>FunctionRuntime</code> is implementable; real e2e is gated on Daytona env (<code>DAYTONA_API_KEY</code> etc.), orchestration is unit-tested with a mocked client.</li>
+<li><strong><code>jose</code> already a dep</strong> — OIDC <code>IdentityResolver</code> is fully implementable + testable now with a local JWKS HTTP server (same pattern as <code>test/admin-multiprovider.test.ts</code>).</li>
+</ul>
+
+<h2>Adapter selection (config)</h2>
+<pre><code>HYPER_MCP_BAAS_IDENTITY=opaque        # opaque (default) | oidc
+HYPER_MCP_BAAS_RUNTIME=vm              # vm (default, trusted dev) | daytona
+HYPER_MCP_APP_DATA_BACKEND=pglite      # pglite (default) | pg
+
+# OIDC boundary providers (when identity=oidc): JSON list
+HYPER_MCP_BAAS_OIDC_PROVIDERS='[
+  {"issuer":"https://clerk.example.com","audience":"hyper-mcp","jwksUrl":"https://clerk.example.com/.well-known/jwks.json","accountId":"myapp"}
+]'
+
+# Daytona (when runtime=daytona)
+DAYTONA_API_KEY=...            # plus DAYTONA_* env the SDK expects
+HYPER_MCP_DAYTONA_TIMEOUT_MS=20000
+
+# External Postgres app_data (when app_data_backend=pg)
+PG_TEST_URL=postgres://user:pass@host:5432/db   # also used by gated tests
+HYPER_MCP_APP_DATA_PG_URL=postgres://...</pre>
+<p class="muted">A provider's <code>accountId</code> binds an OIDC issuer to the hyper-mcp account whose functions
+end users may call. <code>sub</code> becomes the <code>userId</code> (the OIDC user id is the row key); if the
+user does not yet exist in <code>auth_users</code>, it is <strong>auto-provisioned</strong> on first call with
+<code>attributes = { oidc_sub }</code> so <code>ctx.db</code> has a stable <code>user_id</code>.</p>
+
+<h2>Plan</h2>
+
+<h3>Step 1 — OIDC JWT IdentityResolver + config</h3>
+<p><span class="chip warn">Risk: medium</span></p>
+<p><strong>Work:</strong> <code>src/baas/identity-oidc.ts</code>: <code>OidcIdentityResolver</code> that decodes the
+unverified <code>iss</code>, selects the matching configured provider, <code>jwtVerify</code> against its JWKS
+(<code>createRemoteJWKSet</code>) with the provider's <code>audience</code>, then resolves <code>accountId</code>
+(provider-bound) + <code>userId = sub</code> (auto-provisioning the user via <code>authCreateUser</code> if missing,
+idempotent on <code>attributes.oidc_sub</code>). Add <code>HYPER_MCP_BAAS_IDENTITY</code> +
+<code>HYPER_MCP_BAAS_OIDC_PROVIDERS</code> config parsing. Resolver factory selects opaque vs oidc.</p>
+<p><strong>Acceptance:</strong> valid OIDC JWT resolves to <code>{accountId, userId}</code>; wrong issuer/audience/expired → null; user auto-provisioned once; second call reuses the same user. Tests use a real local JWKS server.</p>
+
+<h3>Step 2 — Internal capability RPC for sandboxed functions</h3>
+<p><span class="chip warn">Risk: medium</span> Security-sensitive.</p>
+<p><strong>Work:</strong> Add internal endpoints <code>POST /_internal/cap/:op</code> (op ∈ db_get/db_find/db_create/db_update/db_delete/db_count/auth_*/kv_*) that accept a short-lived <strong>internal capability token</strong> (signed by hyper-mcp with a per-call secret) binding <code>{accountId, userId, exp}</code>. The Daytona runtime injects an RPC shim into the sandbox that calls these endpoints with the token. This keeps all data access server-side and RLS-scoped; the sandbox never sees a DB connection.</p>
+<p><strong>Acceptance:</strong> internal token verified; capability calls enforce the same user-scoping as <code>ctx.db</code>; token expires; rejected without/with-tampered token → 401. Unit-tested directly.</p>
+
+<h3>Step 3 — Daytona FunctionRuntime</h3>
+<p><span class="chip warn">Risk: medium</span></p>
+<p><strong>Work:</strong> <code>src/baas/runtime-daytona.ts</code>: <code>DaytonaFunctionRuntime</code> using <code>@daytona/sdk</code>. Per call: get/create a sandbox, inject the function source + an RPC shim (uses <code>fetch</code> to <code>/_internal/cap/*</code> with the internal token) + a JSON <code>ctx</code> payload (<code>{user, body, capUrl, capToken}</code>), execute, collect stdout/JSON result, enforce timeout, dispose/reuse sandbox. Unit-test orchestration with a mocked Daytona client; gate the real e2e on <code>DAYTONA_API_KEY</code>.</p>
+<p><strong>Acceptance:</strong> mocked end-to-end (shim → cap endpoint → app_data) returns the function's JSON result; timeout aborts; sandbox errors → 500. Real Daytona test skips when env unset.</p>
+
+<h3>Step 4 — External Postgres engine RLS for app_data</h3>
+<p><span class="chip warn">Risk: medium</span></p>
+<p><strong>Work:</strong> <code>src/baas/appdata-pg.ts</code>: <code>PgAppDataPort</code> implementing <code>AppDataPort</code> against external Postgres via <code>pg</code>. Schema migration creates <code>app_data</code> with <code>FORCE ROW LEVEL SECURITY</code> + policy <code>USING (user_id = current_setting('app.user_id', true)) WITH CHECK (...)</code>. Every method runs in a transaction that does <code>SELECT set_config('app.user_id', $userId, true)</code> first, so the engine enforces scoping — the wrapper is no longer the enforcement. Factory selects pglite vs pg for app_data. Tests gated on <code>PG_TEST_URL</code>.</p>
+<p><strong>Acceptance:</strong> with a real Postgres (<code>PG_TEST_URL</code> set), cross-user reads/writes are blocked by the engine; a row with another <code>user_id</code> is invisible; a cross-user insert is rejected (<code>WITH CHECK</code>). Tests skip cleanly when <code>PG_TEST_URL</code> is unset.</p>
+
+<h3>Step 5 — Wire selection into the endpoint + startup</h3>
+<p><span class="chip todo">Risk: low</span></p>
+<p><strong>Work:</strong> <code>app.ts</code> builds the resolver/runtime/appdata from config (factories in <code>src/baas/index.ts</code>). The <code>/u</code> endpoint uses the configured resolver + runtime; <code>ctx.db</code> uses the configured appdata backend. Startup logs name the selected impls (and the vm-trusted warning only when vm is selected). Default = opaque/vm/pglite (unchanged behavior).</p>
+<p><strong>Acceptance:</strong> default config behaves identically to today; selecting <code>oidc</code>/<code>daytona</code>/<code>pg</code> routes through the prod impls; startup logs the choices.</p>
+
+<h3>Step 6 — Tests + docs + validation</h3>
+<p><span class="chip todo">Risk: low</span></p>
+<p><strong>Work:</strong> <code>test/baas-oidc.test.ts</code> (real JWKS server), <code>test/baas-daytona.test.ts</code> (mocked client + real gated), <code>test/baas-appdata-pg.test.ts</code> (gated on <code>PG_TEST_URL</code>), <code>test/baas-internal-cap.test.ts</code> (internal token + capability endpoints). README + <code>port-contracts.md</code> prod-adapter section. typecheck/build/test.</p>
+<p><strong>Acceptance:</strong> all ungated tests pass; gated tests skip cleanly; typecheck + build green; test count up; docs describe selection + prod impls + the full-Postgres-Ports follow-up.</p>
+
+<h2>Security / privacy</h2>
+<ul>
+<li>OIDC resolver: unverified <code>iss</code> only routes provider selection; signature/aud/exp enforced by <code>jwtVerify</code>; provider→account binding is config-trusted; <code>sub</code> is the user key. No JWT stored.</li>
+<li>Internal capability tokens: short-lived, signed, bind <code>{accountId, userId, exp}</code>; the sandbox only gets this token + the cap URL, never DB credentials. Cap endpoints re-verify and enforce user-scoping server-side.</li>
+<li>Daytona: functions run in an isolated sandbox with no Node host access; the only egress is the capability RPC to hyper-mcp. Real isolation — the security barrier the prototype lacks.</li>
+<li>Postgres RLS: <code>FORCE ROW LEVEL SECURITY</code> + <code>WITH CHECK</code>; scoping is enforced by the engine per-transaction via <code>SET LOCAL app.user_id</code>, not by a wrapper that can be bypassed by a buggy query.</li>
+<li>No secrets in logs; internal token never returned to the caller; <code>process</code>/<code>require</code> unavailable in the sandbox (Daytona runs only the injected script + shim).</li>
+</ul>
+
+<h2>Non-goals</h2>
+<ul>
+<li>Full external-Postgres <code>Ports</code> adapter (data/cache/blob/queue/search/auth on external Postgres) — follow-up; this cycle proves engine RLS on <code>app_data</code>.</li>
+<li>Daytona sandbox pooling/keep-warm optimization (per-call create is acceptable for MVP prod; pooling is a follow-up).</li>
+<li>Function network egress beyond the capability RPC (no arbitrary <code>fetch</code> to third parties).</li>
+<li>OIDC refresh tokens / session rotation — boundary JWTs are short-lived from the provider.</li>
+</ul>
+
+<h2>Validation commands</h2>
+<pre><code>npm run typecheck
+npm run build
+npm test
+PG_TEST_URL=postgres://... npm test -- appdata-pg   # opt-in real Postgres RLS test
+DAYTONA_API_KEY=... npm test -- daytona             # opt-in real Daytona test</pre></pre>
+
+<h2>LLM-as-judge rubric</h2>
+<table>
+<tr><th>Area</th><th>Judgment</th></tr>
+<tr><td>Correctness</td><td>OIDC resolves + auto-provisions; internal cap enforces scoping; Daytona mocked flow returns JSON; Postgres RLS blocks cross-user (when PG available).</td></tr>
+<tr><td>Acceptance coverage</td><td>Every step criterion has test or diff evidence; gated tests skip cleanly.</td></tr>
+<tr><td>Security/privacy</td><td>Engine RLS not bypassable; internal token signed+short-lived; sandbox has no host access; no secrets logged.</td></tr>
+<tr><td>Simplicity</td><td>Prod impls are drop-in behind existing contracts; default behavior unchanged.</td></tr>
+<tr><td>Taste</td><td>Config selection is clean; honest about gated coverage; prototype→prod is one env flip. Target ≥4.</td></tr>
+<tr><td>Originality</td><td>Capability-RPC sandbox model + engine-RLS substrate swap is a coherent BaaS-prod story. Target ≥4.</td></tr>
+<tr><td>Maintainability</td><td>Factories + contracts make the full-Postgres-Ports follow-up a clear next step.</td></tr>
+<tr><td>Validation</td><td>typecheck + build + ungated tests; gated tests opt-in.</td></tr>
+</table>
+
+<h2>Definition of done</h2>
+<ul>
+<li><code>OidcIdentityResolver</code> implemented + tested (real JWKS).</li>
+<li>Internal capability RPC endpoints + signed token implemented + tested.</li>
+<li><code>DaytonaFunctionRuntime</code> implemented + mocked-tested; real e2e gated.</li>
+<li><code>PgAppDataPort</code> with engine RLS implemented; tests gated on <code>PG_TEST_URL</code>.</li>
+<li>Config selection wires resolver/runtime/appdata; default unchanged.</li>
+<li><code>npm run typecheck</code>, <code>npm run build</code>, <code>npm test</code> green; gated tests skip cleanly.</li>
+<li>README + port-contracts document prod adapters + selection + the full-Postgres-Ports follow-up.</li>
+</ul>
+
+</body>
+</html>

@@ -10,11 +10,12 @@ import type { Ports } from "../ports/types.js";
  * Prod adapter (contract-only): OIDC JWT verified via JWKS, reusing the
  * multi-provider admin trust `jose` machinery.
  */
-export function createOpaqueTokenResolver(ports: Ports): IdentityResolver {
+export function createOpaqueTokenResolver(getPorts: () => Promise<Ports>): IdentityResolver {
   return {
     async resolve(accountId, credential) {
       if (!credential) return null;
       try {
+        const ports = await getPorts();
         const r = await ports.authVerifySession(accountId, credential);
         if (!r.valid || !r.userId) return null;
         return { accountId, userId: r.userId };

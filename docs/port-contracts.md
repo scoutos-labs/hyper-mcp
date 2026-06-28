@@ -156,6 +156,45 @@ adapter conformance suite.
 - Functions are plain JS (no TypeScript transpilation); latest version wins (no
   aliasing/canary/rollback).
 
+## prod adapters (OIDC, Daytona, external Postgres RLS)
+
+The BaaS prototype adapters ship by default. Prod adapters are config-selected
+behind the same contracts (see README "Prod adapters").
+
+**OIDC IdentityResolver (`baasIdentity=oidc`):** verifies an end-user OIDC JWT
+against the provider's JWKS; routes by `iss` to a configured provider bound to
+an `accountId`; `sub` becomes the `userId`. No JWT stored; no user row
+auto-provisioned (`sub` is a stable row key for `app_data`). Unverified `iss`
+only routes; `jwtVerify` enforces signature/aud/exp.
+
+**Daytona FunctionRuntime (`baasRuntime=daytona`):** executes functions in an
+isolated Daytona sandbox. The sandbox receives a JS shim + the user handler +
+a short-lived signed **cap token**; its only egress is `POST /_internal/cap/:op`
+back to hyper-mcp, which re-verifies the token and enforces user-scoping
+server-side. The sandbox never sees DB credentials or host access. This is a
+real security barrier (unlike the `node:vm` prototype).
+
+**Internal capability RPC (`/_internal/cap/:op`):** HS256 JWT cap token binding
+`{accountId, userId, exp}`, signed with a per-process random secret. Ops:
+`db_*` (require userId), `kv_*` (require userId), `auth_*` (account-only ok).
+Mirrors the prototype `ctx` exactly. Rejected/expired/tampered → 401.
+
+**PgAppDataPort (`appDataBackend=pg`):** `app_data` on external Postgres with
+`ENABLE + FORCE ROW LEVEL SECURITY` + policy
+`USING (user_id = current_setting('app.user_id', true)) WITH CHECK (...)`. Every
+method opens a transaction and runs `SELECT set_config('app.user_id', $1, true)`
+first, so the **engine** enforces scoping — not a wrapper. PGLite cannot enforce
+RLS (verified), which is why the prototype uses app-level filtering and the prod
+path uses external Postgres.
+
+**Not a production guarantee (MVP limits):**
+- Real Daytona e2e + real Postgres RLS tests are opt-in (gated on
+  `DAYTONA_API_KEY` / `PG_TEST_URL`); mocked orchestration + unit tests run by default.
+- Per-call Daytona sandbox create (no warm pool yet).
+- No function network egress beyond the capability RPC.
+- The full external-Postgres `Ports` adapter (all ports) is a follow-up; only
+  `app_data` RLS is proven on external Postgres here.
+
 ## Cross-cutting
 
 - **Tenant isolation:** every data-plane table is keyed by `account_id`. This

@@ -23,13 +23,16 @@
     "integrate:url": "tsx scripts/agent-integration.ts --url"
   },
   "dependencies": {
+    "@daytona/sdk": "^0.192.0",
     "@electric-sql/pglite": "^0.5.3",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "jose": "^6.2.3",
+    "pg": "^8.22.0",
     "zod": "^4.1.13"
   },
   "devDependencies": {
     "@types/node": "^25.0.0",
+    "@types/pg": "^8.20.0",
     "tsup": "^8.5.1",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",

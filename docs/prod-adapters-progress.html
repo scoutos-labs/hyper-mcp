@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>hyper-mcp — Prod Adapters — Progress</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 920px; margin: 2rem auto; padding: 0 1.25rem; color: #1f2330; background: #fafbff; }
+  h1 { font-size: 1.5rem; border-bottom: 2px solid #4f46e5; padding-bottom: .35rem; }
+  h2 { font-size: 1.15rem; margin-top: 1.5rem; color: #4f46e5; }
+  code { font-family: ui-monospace, SFmono-Regular, Menlo, Consolas, monospace; font-size: 13px; background: #eef0fb; padding: .1rem .35rem; border-radius: 4px; }
+  table { border-collapse: collapse; width: 100%; margin: .75rem 0; }
+  th, td { border: 1px solid #d7dbe8; padding: .4rem .6rem; text-align: left; vertical-align: top; }
+  th { background: #eef0fb; }
+  .chip { display: inline-block; padding: .1rem .55rem; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .todo { background: #fff3cd; color: #7a5d00; }
+  .do { background: #d1fae5; color: #065f46; }
+  .muted { color: #667085; }
+</style>
+</head>
+<body>
+<h1>Progress — Prod Adapters</h1>
+<p><strong>Slug:</strong> <code>prod-adapters</code> &nbsp;|&nbsp; <strong>Branch:</strong> <code>feat/prod-adapters</code> &nbsp;|&nbsp;
+<strong>Status:</strong> <span class="chip do">complete</span> &nbsp;|&nbsp; <strong>PRD:</strong> <code>docs/prod-adapters-prd.html</code></p>
+<p class="muted">Subagents unavailable (broken pi-subagents extension path). Planner and LLM-as-judge performed manually per research-plan-loop skill.</p>
+<table>
+<tr><th>#</th><th>Step</th><th>Status</th><th>Evidence</th></tr>
+<tr><td>1</td><td>OIDC JWT IdentityResolver + config</td><td><span class="chip do">pass</span></td><td><code>src/baas/identity-oidc.ts</code>; config <code>baasIdentity</code>/<code>baasOidcProviders</code>; 11 tests (real JWKS server)</td></tr>
+<tr><td>2</td><td>Internal capability RPC + signed token</td><td><span class="chip do">pass</span></td><td><code>src/baas/cap.ts</code>; HS256 cap token + <code>/_internal/cap/:op</code>; 9 tests (scoping, public-token auth, 401/404)</td></tr>
+<tr><td>3</td><td>Daytona FunctionRuntime</td><td><span class="chip do">pass</span></td><td><code>src/baas/runtime-daytona.ts</code>; shim + codeRun + result parse; 5 tests (4 mocked, 1 real gated)</td></tr>
+<tr><td>4</td><td>External Postgres engine RLS (app_data)</td><td><span class="chip do">pass</span></td><td><code>src/baas/appdata-pg.ts</code>; FORCE RLS + SET LOCAL; 5 tests gated on <code>PG_TEST_URL</code></td></tr>
+<tr><td>5</td><td>Wire selection into endpoint + startup</td><td><span class="chip do">pass</span></td><td><code>app.ts</code>: cap secret, cap endpoint, config-selected resolver/runtime, pg app_data Proxy; default unchanged</td></tr>
+<tr><td>6</td><td>Tests + docs + validation</td><td><span class="chip do">pass</span></td><td>README + port-contracts prod section; typecheck ✓ · build ✓ · 220 passed / 6 skipped</td></tr>
+</table>
+</body>
+</html>

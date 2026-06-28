@@ -359,6 +359,50 @@ HYPER_MCP_FUNCTION_TIMEOUT_MS=5000   # wall-clock cap per function call
 Function source, `app_data`, and `app_functions` are all tenant-isolated by
 `account_id`; `app_data` is additionally scoped by `user_id` (RLS).
 
+### Prod adapters (swappable, config-selected)
+
+The prototype impls are the default. Flip env vars to route through the prod
+adapters behind the same contracts — your functions and endpoints do not change:
+
+| Contract | Prototype (default) | Prod | Env to select prod |
+|---|---|---|---|
+| IdentityResolver | opaque session token | OIDC JWT via JWKS | `HYPER_MCP_BAAS_IDENTITY=oidc` + `HYPER_MCP_BAAS_OIDC_PROVIDERS` |
+| FunctionRuntime | `node:vm` trusted-context | Daytona sandbox | `HYPER_MCP_BAAS_RUNTIME=daytona` + `DAYTONA_API_KEY` + `HYPER_MCP_BAAS_CAP_URL` |
+| app_data (RLS) | PGLite app-level wrapper | external Postgres engine RLS | `HYPER_MCP_APP_DATA_BACKEND=pg` + `HYPER_MCP_APP_DATA_PG_URL` |
+
+```env
+# OIDC boundary: bind an issuer to a hyper-mcp account; end users' `sub` is the userId.
+HYPER_MCP_BAAS_IDENTITY=oidc
+HYPER_MCP_BAAS_OIDC_PROVIDERS='[{"issuer":"https://clerk.example.com","audience":"hyper-mcp","jwksUrl":"https://clerk.example.com/.well-known/jwks.json","accountId":"myapp"}]'
+
+# Daytona runtime: real isolation for untrusted functions. CAP_URL is the
+# public base URL the sandbox calls back to for capabilities (must be reachable
+# from the Daytona sandbox). A per-process secret signs the cap tokens.
+HYPER_MCP_BAAS_RUNTIME=daytona
+DAYTONA_API_KEY=...                      # plus DAYTONA_* env the SDK expects
+HYPER_MCP_BAAS_CAP_URL=https://your-service.onrender.com
+HYPER_MCP_DAYTONA_TIMEOUT_MS=20000
+
+# External Postgres engine RLS for app_data (FORCE ROW LEVEL SECURITY + policy).
+HYPER_MCP_APP_DATA_BACKEND=pg
+HYPER_MCP_APP_DATA_PG_URL=postgres://user:pass@host:5432/db
+```
+
+> The Daytona runtime is the security barrier the prototype `node:vm` runtime
+> is not — run untrusted/multi-tenant functions only with `baasRuntime=daytona`.
+> The Postgres backend makes the **database** the RLS authority (engine-enforced
+> `WITH CHECK`), so a buggy query cannot leak another user's rows.
+
+**Tests:** OIDC + internal-cap + Daytona (mocked) run by default; the real
+Daytona and real-Postgres tests are opt-in:
+```sh
+DAYTONA_API_KEY=... npm test -- daytona
+PG_TEST_URL=postgres://... npm test -- appdata-pg
+```
+
+The full external-Postgres `Ports` adapter (data/cache/blob/queue/search/auth on
+external Postgres) is a follow-up; this cycle proves engine RLS on `app_data`.
+
 ## Configuration
 
 ```env

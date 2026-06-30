@@ -83,6 +83,8 @@ export interface Config {
   authSessionTtlSeconds: number;
   /** Wall-clock timeout (ms) for a single BaaS function call via /u/:accountId/:fn. */
   functionTimeoutMs: number;
+  /** Allowed browser origins for BaaS /u/:accountId/:fn calls; ["*"] allows static demos with bearer tokens. */
+  baasCorsOrigins: string[];
   /** BaaS boundary identity adapter: opaque (default) | oidc. */
   baasIdentity: BaasIdentity;
   /** BaaS function runtime adapter: vm (default, trusted dev) | daytona. */
@@ -130,6 +132,25 @@ function parseBaasOidcProviders(env: Record<string, string | undefined>): OidcPr
     out.push({ issuer, audience, jwksUrl, accountId });
   }
   return out;
+}
+
+function parseBaasCorsOrigins(env: Record<string, string | undefined>): string[] {
+  const raw = env.HYPER_MCP_BAAS_CORS_ORIGINS;
+  if (raw === undefined || raw === "") return ["*"];
+  const origins = raw.split(",").map((x) => x.trim()).filter(Boolean);
+  if (origins.length === 0) return [];
+  if (origins.includes("*") && origins.length > 1) {
+    throw new Error('HYPER_MCP_BAAS_CORS_ORIGINS may be "*" or a comma-separated origin allowlist, not both');
+  }
+  for (const origin of origins) {
+    if (origin === "*") continue;
+    let url: URL;
+    try { url = new URL(origin); } catch { throw new Error(`HYPER_MCP_BAAS_CORS_ORIGINS contains invalid origin: ${JSON.stringify(origin)}`); }
+    if (url.origin !== origin || (url.protocol !== "https:" && url.protocol !== "http:")) {
+      throw new Error(`HYPER_MCP_BAAS_CORS_ORIGINS entries must be bare http(s) origins, got: ${JSON.stringify(origin)}`);
+    }
+  }
+  return origins;
 }
 
 function parseEnum<T extends string>(env: Record<string, string | undefined>, key: string, allowed: T[], fallback: T): T {
@@ -316,6 +337,7 @@ export function loadConfig(env = process.env as Record<string, string | undefine
     metricsPublic: env.HYPER_MCP_METRICS_PUBLIC !== "false",
     authSessionTtlSeconds: parsePositiveInt(env, "HYPER_MCP_AUTH_SESSION_TTL_SECONDS", 86400),
     functionTimeoutMs: parsePositiveInt(env, "HYPER_MCP_FUNCTION_TIMEOUT_MS", 5000),
+    baasCorsOrigins: parseBaasCorsOrigins(env),
     baasIdentity: parseEnum(env, "HYPER_MCP_BAAS_IDENTITY", ["opaque", "oidc"], "opaque"),
     baasRuntime: parseEnum(env, "HYPER_MCP_BAAS_RUNTIME", ["vm", "daytona"], "vm"),
     appDataBackend: parseEnum(env, "HYPER_MCP_APP_DATA_BACKEND", ["pglite", "pg"], "pglite"),

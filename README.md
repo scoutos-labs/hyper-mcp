@@ -354,10 +354,35 @@ curl -X POST https://your-service.onrender.com/u/myapp/listPosts \
 
 ```env
 HYPER_MCP_FUNCTION_TIMEOUT_MS=5000   # wall-clock cap per function call
+# Browser CORS for static BaaS frontends (ZenBin, localhost demos, etc.).
+# Default "*" works with bearer-token fetches and no cookies. Set a comma-separated
+# allowlist to enforce specific origins, or an empty value to disable CORS headers.
+HYPER_MCP_BAAS_CORS_ORIGINS=*
 ```
 
 Function source, `app_data`, and `app_functions` are all tenant-isolated by
 `account_id`; `app_data` is additionally scoped by `user_id` (RLS).
+
+
+### Secure ZenBin blog demo
+
+This repo includes a small end-to-end demo generator for a private ZenBin page
+that fetches fake blog posts from hyper-mcp BaaS user-scoped `app_data`:
+
+```sh
+# Generate only; useful for previewing/publishing the static page shell.
+npx tsx scripts/zenbin-blog-demo.ts --generate-only --out dist/zenbin-blog-demo.html
+
+# Provision the BaaS account/functions on a configured service, then generate.
+# Requires HYPER_MCP_ADMIN_PRIVATE_JWK matching the service admin trust root.
+npx tsx scripts/zenbin-blog-demo.ts --base-url https://hyper-mcp.onrender.com
+```
+
+The generated browser page contains only the service URL and account id. It does
+not include admin/account JWTs or private keys; it calls a public `demoAuth`
+function to mint an end-user session token, then calls authenticated
+`ensureBlogPosts` and `listBlogPosts` functions that use `ctx.db`. Publish the
+output with ZenBin sign-to-read/private access for the secure-page version.
 
 ### Prod adapters (swappable, config-selected)
 

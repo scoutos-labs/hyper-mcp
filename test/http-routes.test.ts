@@ -115,6 +115,49 @@ describe("HTTP public routes", () => {
   });
 });
 
+describe("HTTP BaaS CORS", () => {
+  it("allows browser preflight for static BaaS pages by default", async () => {
+    await startApp(hostedConfig());
+    const res = await fetch(`${baseUrl}/u/demo/listPosts`, {
+      method: "OPTIONS",
+      headers: {
+        origin: "https://demo.zenbin.org",
+        "access-control-request-method": "POST",
+        "access-control-request-headers": "authorization,content-type",
+      },
+    });
+    expect(res.status).toBe(204);
+    expect(res.headers.get("access-control-allow-origin")).toBe("*");
+    expect(res.headers.get("access-control-allow-methods")).toContain("POST");
+    expect(res.headers.get("access-control-allow-headers")).toContain("authorization");
+  });
+
+  it("enforces configured BaaS browser origins", async () => {
+    await startApp(loadConfig({
+      HYPER_MCP_ADMIN_PUBLIC_JWK: JSON.stringify(adminJwk),
+      HYPER_MCP_ADMIN_ISSUER: "admin-agent",
+      HYPER_MCP_ADMIN_AUDIENCE: "hyper-mcp",
+      HYPER_MCP_ADMIN_KID: "admin-1",
+      HYPER_MCP_AUTH_REQUIRED: "true",
+      HYPER_MCP_BAAS_CORS_ORIGINS: "https://allowed.example",
+    } as any));
+
+    const allowed = await fetch(`${baseUrl}/u/demo/listPosts`, {
+      method: "OPTIONS",
+      headers: { origin: "https://allowed.example", "access-control-request-method": "POST" },
+    });
+    expect(allowed.status).toBe(204);
+    expect(allowed.headers.get("access-control-allow-origin")).toBe("https://allowed.example");
+    expect(allowed.headers.get("vary")).toContain("Origin");
+
+    const denied = await fetch(`${baseUrl}/u/demo/listPosts`, {
+      method: "OPTIONS",
+      headers: { origin: "https://blocked.example", "access-control-request-method": "POST" },
+    });
+    expect(denied.status).toBe(403);
+  });
+});
+
 describe("HTTP /mcp auth gateway", () => {
   it("rejects POST /mcp without a token with 401", async () => {
     await startApp(hostedConfig());

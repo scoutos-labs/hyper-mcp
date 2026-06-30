@@ -17,6 +17,43 @@ import { logger, startTimer, requestLogger, getMetrics, recordAuthFailure } from
 
 export type PortsGetter = () => Promise<Ports>;
 
+function appendVary(res: any, value: string) {
+  const existing = res.getHeader?.("Vary");
+  if (!existing) {
+    res.setHeader("Vary", value);
+    return;
+  }
+  const parts = String(existing).split(",").map((x) => x.trim().toLowerCase());
+  if (!parts.includes(value.toLowerCase())) res.setHeader("Vary", `${existing}, ${value}`);
+}
+
+function applyBaasCors(req: any, res: any, config: Config): boolean {
+  const rawOrigin = req.headers?.origin;
+  const origin = Array.isArray(rawOrigin) ? rawOrigin[0] : (typeof rawOrigin === "string" ? rawOrigin : undefined);
+  const allowed = config.baasCorsOrigins;
+
+  if (allowed.length === 0) return true;
+
+  let allowOrigin: string | undefined;
+  if (allowed.includes("*")) {
+    allowOrigin = "*";
+  } else if (origin && allowed.includes(origin)) {
+    allowOrigin = origin;
+  }
+
+  if (origin && !allowOrigin) return false;
+
+  if (allowOrigin) {
+    res.setHeader("Access-Control-Allow-Origin", allowOrigin);
+    res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "authorization, content-type");
+    res.setHeader("Access-Control-Max-Age", "600");
+    if (allowOrigin !== "*") appendVary(res, "Origin");
+  }
+
+  return true;
+}
+
 /**
  * Build the Express application with all routes wired (public, admin, MCP).
  * Transport-agnostic: the caller is responsible for listening. Pure factory —
@@ -126,7 +163,17 @@ export function createApp(config: Config, getPorts: PortsGetter): ReturnType<typ
   // session token or OIDC JWT (or no token for public functions). The resolver
   // and runtime are config-selected (opaque/vm prototype or oidc/daytona prod).
   const resolver = createIdentityResolver(config, getBaasPorts);
+  app.options("/u/:accountId/:fn", (req: any, res: any) => {
+    if (!applyBaasCors(req, res, config)) {
+      return res.status(403).json({ error: "CORS_ORIGIN_DENIED", message: "Origin is not allowed for BaaS calls" });
+    }
+    return res.status(204).end();
+  });
+
   app.post("/u/:accountId/:fn", async (req: any, res: any) => {
+    if (!applyBaasCors(req, res, config)) {
+      return res.status(403).json({ error: "CORS_ORIGIN_DENIED", message: "Origin is not allowed for BaaS calls" });
+    }
     const timer = startTimer("baas.function");
     try {
       const ports = await getBaasPorts();

@@ -11,7 +11,8 @@ import type { OidcProvider } from "../config.js";
  * The unverified `iss` only routes provider selection; signature/aud/exp are
  * enforced by `jwtVerify`. The provider's `accountId` binds an issuer to the
  * hyper-mcp account whose functions those end users may call, and must match the
- * route's `:accountId`. `sub` becomes the `userId` (the row key for `ctx.db`).
+ * route's `:accountId`. The verified `sub` becomes the `userId` (the row key for
+ * `ctx.db`).
  *
  * No JWT is stored; no user row is auto-provisioned — `sub` is a stable user id
  * and `app_data` is keyed by `(account_id, user_id)`, so `ctx.db` works directly.
@@ -27,25 +28,27 @@ export function createOidcIdentityResolver(providers: OidcProvider[]): IdentityR
   return {
     async resolve(routeAccountId, credential) {
       if (!credential) return null;
-      // Decode unverified iss + sub for routing.
-      let iss: string | undefined, sub: string | undefined;
+      // Decode unverified iss for provider routing only. Never trust identity
+      // fields from this payload; use the payload returned by jwtVerify below.
+      let iss: string | undefined;
       try {
         const parts = credential.split(".");
         if (parts.length !== 3) return null;
         const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
         iss = typeof payload.iss === "string" ? payload.iss : undefined;
-        sub = typeof payload.sub === "string" ? payload.sub : undefined;
       } catch { return null; }
-      if (!iss || !sub) return null;
+      if (!iss) return null;
 
       const provider = providers.find((p) => p.issuer === iss);
       if (!provider) return null;
       if (provider.accountId !== routeAccountId) return null; // issuer not bound to this account
 
       try {
-        await jwtVerify(credential, getKeySet(provider), { issuer: provider.issuer, audience: provider.audience });
+        const { payload } = await jwtVerify(credential, getKeySet(provider), { issuer: provider.issuer, audience: provider.audience });
+        const sub = typeof payload.sub === "string" ? payload.sub : undefined;
+        if (!sub) return null;
+        return { accountId: provider.accountId, userId: sub };
       } catch { return null; }
-      return { accountId: provider.accountId, userId: sub };
     },
   };
 }

@@ -24,6 +24,15 @@ function providers(accountId = "myapp"): OidcProvider[] {
   return [{ issuer: "https://clerk.example.com", audience: "hyper-mcp", jwksUrl, accountId }];
 }
 
+
+function tamperPayloadSub(token: string, sub: string) {
+  const parts = token.split(".");
+  const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
+  payload.sub = sub;
+  parts[1] = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
+  return parts.join(".");
+}
+
 function signJwt(opts: { sub?: string; iss?: string; aud?: string; expired?: boolean } = {}) {
   return new SignJWT({})
     .setProtectedHeader({ alg: "EdDSA", kid: "oidc-1" })
@@ -68,6 +77,13 @@ describe("OidcIdentityResolver", () => {
   it("returns null for a tampered token", async () => {
     const tok = await signJwt();
     const ident = await createOidcIdentityResolver(providers()).resolve("myapp", tok.slice(0, -2) + "AA");
+    expect(ident).toBeNull();
+  });
+
+  it("does not trust a decoded subject when signature verification fails", async () => {
+    const tok = await signJwt({ sub: "real-user" });
+    const tampered = tamperPayloadSub(tok, "attacker-user");
+    const ident = await createOidcIdentityResolver(providers()).resolve("myapp", tampered);
     expect(ident).toBeNull();
   });
 
